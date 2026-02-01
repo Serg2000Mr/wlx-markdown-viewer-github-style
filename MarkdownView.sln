@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.12.35527.113
@@ -7,7 +7,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MarkdownView", "MarkdownVie
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Markdown", "Markdown\Markdown.vcxproj", "{D5058C67-BF13-4E8E-9664-F5423B79771E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Markdig.net", "Markdig.net\Markdig.net.csproj", "{F86ACC7C-B7AF-4CC3-9EE2-3EFA8C585B81}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MarkdigNative", "MarkdigNative\MarkdigNative.csproj", "{F86ACC7C-B7AF-4CC3-9EE2-3EFA8C585B81}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

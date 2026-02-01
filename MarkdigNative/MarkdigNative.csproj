@@ -8,6 +8,7 @@
     <IsAotCompatible>true</IsAotCompatible>
     <OutputType>Library</OutputType>
     <BaseOutputPath>$(SolutionDir)bin</BaseOutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

@@ -15,11 +15,42 @@ public static class Lib
             string cssFile = Marshal.PtrToStringAnsi(cssFilePtr) ?? "";
             string extensions = Marshal.PtrToStringAnsi(extensionsPtr) ?? "";
 
+            if (!File.Exists(filename))
+            {
+                return CreateNativeString("<html><body><h1>Error</h1><p>File not found</p></body></html>");
+            }
+
             string source = File.ReadAllText(filename);
             
-            var pipeline = new MarkdownPipelineBuilder()
-                .Configure(extensions)
-                .Build();
+            var builder = new MarkdownPipelineBuilder();
+            
+            // Default extensions (often used)
+            builder.UseEmphasisExtras()
+                   .UseAutoLinks()
+                   .UseListExtras()
+                   .UseCustomContainers()
+                   .UseGenericAttributes();
+            
+            // Conditional extensions based on the extensions string
+            bool all = string.IsNullOrEmpty(extensions) || extensions.Contains("advanced", StringComparison.OrdinalIgnoreCase);
+
+            if (all || extensions.Contains("pipetables", StringComparison.OrdinalIgnoreCase)) builder.UsePipeTables();
+            if (all || extensions.Contains("gridtables", StringComparison.OrdinalIgnoreCase)) builder.UseGridTables();
+            if (all || extensions.Contains("footnotes", StringComparison.OrdinalIgnoreCase)) builder.UseFootnotes();
+            if (all || extensions.Contains("citations", StringComparison.OrdinalIgnoreCase)) builder.UseCitations();
+            if (all || extensions.Contains("abbreviations", StringComparison.OrdinalIgnoreCase)) builder.UseAbbreviations();
+            if (all || extensions.Contains("emojis", StringComparison.OrdinalIgnoreCase)) builder.UseEmojiAndSmiley();
+            if (all || extensions.Contains("definitionlists", StringComparison.OrdinalIgnoreCase)) builder.UseDefinitionLists();
+            if (all || extensions.Contains("figures", StringComparison.OrdinalIgnoreCase)) builder.UseFigures();
+            if (all || extensions.Contains("mathematics", StringComparison.OrdinalIgnoreCase)) builder.UseMathematics();
+            if (all || extensions.Contains("bootstrap", StringComparison.OrdinalIgnoreCase)) builder.UseBootstrap();
+            if (all || extensions.Contains("medialinks", StringComparison.OrdinalIgnoreCase)) builder.UseMediaLinks();
+            if (all || extensions.Contains("smartypants", StringComparison.OrdinalIgnoreCase)) builder.UseSmartyPants();
+            if (all || extensions.Contains("autoidentifiers", StringComparison.OrdinalIgnoreCase)) builder.UseAutoIdentifiers();
+            if (all || extensions.Contains("tasklists", StringComparison.OrdinalIgnoreCase)) builder.UseTaskLists();
+            if (all || extensions.Contains("yaml", StringComparison.OrdinalIgnoreCase)) builder.UseYamlFrontMatter();
+
+            var pipeline = builder.Build();
 
             var sb = new StringBuilder(1000);
             sb.AppendLine("<html><head>");
@@ -41,25 +72,21 @@ public static class Lib
             sb.AppendLine("</body>");
             sb.AppendLine("</html>");
 
-            string result = sb.ToString();
-            byte[] utf8Bytes = Encoding.UTF8.GetBytes(result);
-            
-            // Allocate memory that can be freed by the caller
-            IntPtr nativeString = Marshal.AllocHGlobal(utf8Bytes.Length + 1);
-            Marshal.Copy(utf8Bytes, 0, nativeString, utf8Bytes.Length);
-            Marshal.WriteByte(nativeString, utf8Bytes.Length, 0); // Null terminator
-
-            return nativeString;
+            return CreateNativeString(sb.ToString());
         }
         catch (Exception ex)
         {
-            string error = $"<html><body><h1>Error</h1><p>{ex.Message}</p></body></html>";
-            byte[] utf8Bytes = Encoding.UTF8.GetBytes(error);
-            IntPtr nativeString = Marshal.AllocHGlobal(utf8Bytes.Length + 1);
-            Marshal.Copy(utf8Bytes, 0, nativeString, utf8Bytes.Length);
-            Marshal.WriteByte(nativeString, utf8Bytes.Length, 0);
-            return nativeString;
+            return CreateNativeString($"<html><body><h1>Error</h1><p>{ex.Message}</p></body></html>");
         }
+    }
+
+    private static IntPtr CreateNativeString(string text)
+    {
+        byte[] utf8Bytes = Encoding.UTF8.GetBytes(text);
+        IntPtr nativeString = Marshal.AllocHGlobal(utf8Bytes.Length + 1);
+        Marshal.Copy(utf8Bytes, 0, nativeString, utf8Bytes.Length);
+        Marshal.WriteByte(nativeString, utf8Bytes.Length, 0); // Null terminator
+        return nativeString;
     }
 
     [UnmanagedCallersOnly(EntryPoint = "FreeHtmlBuffer")]
