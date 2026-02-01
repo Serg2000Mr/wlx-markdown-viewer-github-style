@@ -4,8 +4,11 @@
 
 #include <direct.h>
 #include <windows.h>
+#include <shlwapi.h>
 #include <fstream>
 #include <sstream>
+
+#pragma comment(lib, "Shlwapi.lib")
 #include "browserhost.h"
 #include "ListerPlugin.h"
 #include "resource.h"
@@ -28,6 +31,9 @@ int num_lister_windows = 0;
 char FileToLoadCopy[MAX_PATH];
 HWND ParentWinCopy;
 int ShowFlagsCopy;
+
+// Temporary HTML file path for markdown rendering
+char TempHtmlFilePath[MAX_PATH] = "";
 
 CSmallStringList html_extensions;
 CSmallStringList markdown_extensions;
@@ -57,10 +63,70 @@ LRESULT CALLBACK HookKeybProc(int nCode,WPARAM wParam,LPARAM lParam)
 	return CallNextHookEx(hook_keyb, nCode, wParam, lParam);
 }
 
+// Настраивает Internet Explorer Feature Control для разрешения загрузки интернет-контента
+// в локальных HTML файлах. Вызывается один раз при инициализации плагина.
+void SetupIEFeatureControl()
+{
+	// Получаем имя исполняемого файла (totalcmd.exe или totalcmd64.exe)
+	char exePath[MAX_PATH];
+	char exeName[MAX_PATH];
+	GetModuleFileNameA(NULL, exePath, MAX_PATH);
+	char* fileName = strrchr(exePath, '\\');
+	if (fileName)
+		strcpy(exeName, fileName + 1);
+	else
+		strcpy(exeName, exePath);
+
+	HKEY hKey;
+	DWORD value;
+	DWORD size = sizeof(DWORD);
+	DWORD type = REG_DWORD;
+
+	// FEATURE_LOCALMACHINE_LOCKDOWN = 0 - разрешает загрузку интернет-контента в локальных файлах
+	const char* lockdownPath = "SOFTWARE\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_LOCALMACHINE_LOCKDOWN";
+	if (RegCreateKeyExA(HKEY_CURRENT_USER, lockdownPath, 0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+	{
+		if (RegQueryValueExA(hKey, exeName, NULL, &type, (LPBYTE)&value, &size) != ERROR_SUCCESS)
+		{
+			// Ключ не существует - создаём со значением 0
+			value = 0;
+			RegSetValueExA(hKey, exeName, 0, REG_DWORD, (LPBYTE)&value, sizeof(DWORD));
+		}
+		RegCloseKey(hKey);
+	}
+
+	// FEATURE_BROWSER_EMULATION = 11001 (0x2AF9) - режим IE11 Edge
+	const char* emulationPath = "SOFTWARE\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_BROWSER_EMULATION";
+	if (RegCreateKeyExA(HKEY_CURRENT_USER, emulationPath, 0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+	{
+		if (RegQueryValueExA(hKey, exeName, NULL, &type, (LPBYTE)&value, &size) != ERROR_SUCCESS)
+		{
+			// Ключ не существует - создаём со значением 11001 (IE11 Edge mode)
+			value = 0x2AF9;
+			RegSetValueExA(hKey, exeName, 0, REG_DWORD, (LPBYTE)&value, sizeof(DWORD));
+		}
+		RegCloseKey(hKey);
+	}
+}
+
 void InitProc()
 {
 	if(!options.valid)
 		InitOptions();
+	
+	// Настраиваем IE Feature Control для загрузки изображений из интернета
+	// Только если AllowInternetImages=1 в ini файле
+	static bool ieConfigured = false;
+	if (!ieConfigured)
+	{
+		int allowInternetImages = GetPrivateProfileInt("options", "AllowInternetImages", 1, options.IniFileName);
+		if (allowInternetImages)
+		{
+			SetupIEFeatureControl();
+		}
+		ieConfigured = true;
+	}
+
 	if(!hook_keyb&&(options.flags&OPT_KEEPHOOKNOWINDOWS))
 		hook_keyb = SetWindowsHookEx(WH_KEYBOARD, HookKeybProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
 	if(!img_list)
@@ -346,6 +412,15 @@ void prepare_browser(CBrowserHost* browser_host)
 	} while (rs != READYSTATE_COMPLETE);
 }
 
+void CleanupTempHtmlFile()
+{
+	if (TempHtmlFilePath[0] != '\0')
+	{
+		DeleteFileA(TempHtmlFilePath);
+		TempHtmlFilePath[0] = '\0';
+	}
+}
+
 void browser_show_file(CBrowserHost* browserHost, const char* filename, bool useDarkTheme)
 {
 	CHAR css[MAX_PATH];
@@ -357,8 +432,34 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 	Markdown md = Markdown();
 	std::string html = md.ConvertToHtmlAscii(std::string(filename), std::string(css), std::string(renderer_extensions));
 
-	prepare_browser(browserHost);
-	browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.c_str(), html.length());
+	// Удаляем предыдущий временный файл
+	CleanupTempHtmlFile();
+
+	// Создаём временный HTML файл в папке с исходным markdown файлом
+	// Это позволяет корректно разрешать относительные пути к локальным изображениям
+	char tempPath[MAX_PATH];
+	strcpy(tempPath, filename);
+	PathRemoveFileSpecA(tempPath);
+	strcat(tempPath, "\\_markdown_preview_temp.html");
+	strcpy(TempHtmlFilePath, tempPath);
+
+	// Записываем HTML во временный файл
+	std::ofstream outFile(TempHtmlFilePath, std::ios::binary);
+	if (outFile.is_open())
+	{
+		outFile.write(html.c_str(), html.length());
+		outFile.close();
+
+		// Открываем через Navigate - это позволяет работать MOTW и истории навигации
+		CComBSTR url(TempHtmlFilePath);
+		browserHost->mWebBrowser->Navigate(url, NULL, NULL, NULL, NULL);
+	}
+	else
+	{
+		// Fallback: если не удалось создать файл, используем старый метод
+		prepare_browser(browserHost);
+		browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.c_str(), html.length());
+	}
 }
 
 bool is_markdown(const char* FileToLoad)
@@ -481,6 +582,9 @@ void __stdcall ListCloseWindow(HWND ListWin)
 {
     DestroyWindow(ListWin);
 	OleUninitialize();
+
+	// Удаляем временный HTML файл
+	CleanupTempHtmlFile();
 
 	--num_lister_windows;
 	if(!(options.flags&OPT_KEEPHOOKNOWINDOWS)&&hook_keyb&&num_lister_windows==0)
