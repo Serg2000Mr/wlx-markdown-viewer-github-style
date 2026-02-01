@@ -1,9 +1,16 @@
-# Markdown Lister Plugin for Total Commander (32/64-bit version)
+# Markdown Lister Plugin for Total Commander (64-bit version)
 
 Based on [wlx-markdown-viewer plugin](https://github.com/rg-software/wlx-markdown-viewer), 
-and upgraded for displays Markdown files via [Markdig Markdown Processor](https://github.com/xoofx/markdig), which support modern markdown syntax.
+upgraded to use the [Markdig Markdown Processor](https://github.com/xoofx/markdig) for modern syntax support.
 
-[Markdig Markdown Processor](https://github.com/xoofx/markdig) is dotnet library, so dotnet core 8.0 is required to be installed.
+**Key Improvement:** This version uses .NET Native AOT to bundle the Markdig engine into a standalone native DLL. 
+**No external .NET runtime installation is required for the end user.**
+
+## Features
+- Full support for modern Markdown (GFM, tables, emojis, etc.) via Markdig.
+- Standalone: No external dependencies on .NET Runtime.
+- Modern GitHub-inspired styling.
+- Fast and lightweight.
 
 ## Fine Tuning
 
