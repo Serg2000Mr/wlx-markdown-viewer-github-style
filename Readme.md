@@ -53,8 +53,9 @@
 
 - **ezyuzin** за [wlx-markdown-viewer-markdig](https://github.com/ezyuzin/wlx-markdown-viewer) - версию с поддержкой Markdig (требует .NET Core 8.0 Runtime)
 - **rg-software** за оригинальный [wlx-markdown-viewer](https://github.com/rg-software/wlx-markdown-viewer) 
-- **xoofx** за мощный процессор [Markdig](https://github.com/xoofx/markdig)
+- **xoofx** за процессор [Markdig](https://github.com/xoofx/markdig)
 
 ## 📄 Лицензия
 
 Этот проект распространяется под лицензией MIT.
+
