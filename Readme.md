@@ -1,48 +1,62 @@
-# Markdown Lister Plugin for Total Commander (64-bit version)
+# Markdown Lister Plugin для Total Commander
 
-Based on [wlx-markdown-viewer plugin](https://github.com/rg-software/wlx-markdown-viewer), 
-upgraded to use the [Markdig Markdown Processor](https://github.com/xoofx/markdig) for modern syntax support.
+Плагин для просмотра Markdown файлов в Total Commander с современными возможностями и внешним видом как на GitHub.
 
-**Key Improvement:** This version uses .NET Native AOT to bundle the Markdig engine into a standalone native DLL. 
-**No external .NET runtime installation is required for the end user.**
+![Скриншот работы плагина](Скриншот.png)
 
-## Features
-- Full support for modern Markdown (GFM, tables, emojis, etc.) via Markdig.
-- Standalone: No external dependencies on .NET Runtime.
-- Modern GitHub-inspired styling.
-- Fast and lightweight.
+## ✨ Основные возможности
 
-## Notes
+- **Внешний вид полностью соответствует отображению на GitHub** - принимается за эталонное
+- **Диаграммы Mermaid.js** - Полная поддержка блок-схем, диаграмм последовательности, ER-диаграмм и других
+- **Изображения** - Отображение встроенных изображений и внешних изображений по URL
+- **Таблицы** - Полная поддержка pipe-таблиц с выравниванием
+- **Эмодзи** - Эмодзи в стиле GitHub через shortcodes (`:emoji_name:`)
+- **Списки задач** - Интерактивные чекбоксы для отслеживания задач
+- **Подсветка кода** - Синтаксическая подсветка для блоков кода
+- **Математические формулы** - Математические выражения в стиле LaTeX
 
-- **GitHub emoji shortcodes**: Markdig’s emoji parser requires whitespace before `:shortcode:`. GitHub often uses `:shortcode:` inside links (e.g. `[:arrow_up:Title](#...)`), so the plugin pre-processes a small set of GitHub-style shortcodes in `MarkdigNative/Lib.cs` (outside fenced code blocks) to match GitHub rendering.
-- **Performance**: Avoid per-request WebView2 interception unless needed. A global `WebResourceRequested` handler/filter can noticeably slow down opening small Markdown files with images.
+## 🚀 Ключевые преимущества
 
-## Fine Tuning
+- **Без внешних зависимостей** - Не требует установки .NET Runtime
+- **Современный движок WebView2** - На базе Chromium вместо устаревшего Internet Explorer
+- **Быстрая и легкая работа** - Оптимизировано для производительности
 
-Plugin configuration is specified in `MarkdownView.ini`. Markdown-related settings are:
- 
-- `Extensions: MarkdownExtensions` file extensions recognized by the plugin as markdown files.
+## 📦 Установка
 
-- `Renderer: Extensions` A collection of extensions for Markdig Markdown Processor. [Read to markdig extensions features block](https://github.com/xoofx/markdig/blob/master/readme.md)  
-  Follow extensions are supported: common, advanced, alerts, pipetables, gfm-pipetables, emphasisextras, listextras, hardlinebreak, footnotes, footers, citations, attributes, gridtables, abbreviations, emojis, definitionlists, customcontainers, figures, mathematics, bootstrap, medialinks, smartypants, autoidentifiers, tasklists, diagrams, nofollowlinks, noopenerlinks, noreferrerlinks, nohtml, yaml, nonascii-noescape, autolinks, globalization
+1. Скачайте архив из [Releases](https://github.com/Serg2000Mr/wlx-markdown-viewer/releases)
+2. Откройте архив в Total Commander
+3. Подтвердите установку плагина
 
-- `Renderer: CustomCSS` a path to a CSS sheet for customizing the resulting look of the document. A collection of four sheets from [Markdown CSS](https://markdowncss.github.io/) and six Github-inspired sheets courtesy of S.&nbsp;Kuznetsov is included into the package.
+## 🧪 Тестирование
+Откройте любой `.md` файл из проекта клавишей F3 в Total Commander
 
-## Internet Explorer Update
+**Комплексный пример:**
+Протестируйте плагин с комплексными примерами markdown из репозитория [GnuriaN/format-README](https://github.com/GnuriaN/format-README):
+1. Скачайте репозиторий как ZIP
+2. Распакуйте архив
+3. Откройте любой `.md` файл из проекта клавишей F3 в Total Commander
+4. Увидите все возможности markdown в действии: таблицы, эмодзи, списки, диаграммы, изображения и т.д.
 
-The plugin is based on an obsolete Internet Explorer engine, which can be upgraded via [registry hacks](https://github.com/rg-software/wlx-markdown-viewer/raw/master/ie_upgrade_registry.zip) (check [MSDN](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/general-info/ee330730(v=vs.85)?redirectedfrom=MSDN#browser-emulation) for details.)
+## ⚙️ Системные требования
 
-## Setup
+- Windows 10/11
+- Total Commander (64-bit)
+- WebView2 Runtime (обычно уже установлен)
 
-The binary plugin archive comes with the setup script. Just enter the archive, and confirm installation.
+## 🔧 Настройка
 
-## Installation (manual / after build)
+Конфигурация плагина задается в файле `MarkdownView.ini`:
 
-Total Commander **does not create or copy** any plugin folder. When you add a Lister plugin in TC options, you only point to the **path to the `.wlx64` file**. The plugin then runs from **that file’s folder** and loads `MarkdownView.ini`, `css\`, and DLLs from the same directory (via `GetModuleFileName`).
+- `Extensions: MarkdownExtensions` — расширения файлов, распознаваемые плагином как Markdown
+- `Renderer: Extensions` — коллекция расширений для процессора Markdig
+- `Renderer: CustomCSS` — путь к файлу CSS для настройки внешнего вида документа
 
-- **Option A:** Point TC to `bin\Release\MarkdownView.wlx64`. The plugin uses `bin\Release\` (and `bin\Release\css\`) as its root. No need for a folder under `c:\Program Files\totalcmd\plugins\wlx\`.
-- **Option B:** Create a folder yourself (e.g. `c:\Program Files\totalcmd\plugins\wlx\MarkdownView`), copy there: `MarkdownView.wlx64`, `Markdown-x64.dll`, `MarkdigNative-x64.dll`, `MarkdownView.ini`, and the `css\` folder. Then in TC point to `…\MarkdownView\MarkdownView.wlx64`.
+## 🙏 Благодарности
 
-After a successful build, `BuildAll.bat` can update Option B’s folder automatically (with Total Commander closed).
+- **ezyuzin** за [wlx-markdown-viewer-markdig](https://github.com/ezyuzin/wlx-markdown-viewer) - версию с поддержкой Markdig (требует .NET Core 8.0 Runtime)
+- **rg-software** за оригинальный [wlx-markdown-viewer](https://github.com/rg-software/wlx-markdown-viewer) 
+- **xoofx** за процессор [Markdig](https://github.com/xoofx/markdig)
 
-> Note: Updating `c:\Program Files\...` usually requires running `BuildAll.bat` **as Administrator**. If you point Total Commander directly to `bin\Release\MarkdownView.wlx64` (Option A), no Program Files deployment is required.
+## 📄 Лицензия
+
+Этот проект распространяется под лицензией MIT.

@@ -5,6 +5,7 @@
 #include <ExDispID.h>
 #include <mshtmdid.h>
 #include <comutil.h>
+#include <shlobj.h>
 
 #include <vector>
 #include "browserhost.h"
@@ -69,12 +70,22 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 	mParentWin = hParent;
 	AddRef(); // Keep object alive for async callbacks
 
-    wchar_t dllPath[MAX_PATH];
-    GetModuleFileNameW(hinst, dllPath, MAX_PATH);
-    PathRemoveFileSpecW(dllPath);
+    // Use AppData\Local for WebView2 user data to avoid permission issues in Program Files
+    wchar_t appDataPath[MAX_PATH];
+    std::wstring wUserDataPath;
     
-    std::wstring wUserDataPath = std::wstring(dllPath) + L"\\wv2data";
-    CreateDirectoryW(wUserDataPath.c_str(), NULL);
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appDataPath))) {
+        wUserDataPath = std::wstring(appDataPath) + L"\\TotalCommanderMarkdownViewPlugin\\wv2data";
+        CreateDirectoryW((std::wstring(appDataPath) + L"\\TotalCommanderMarkdownViewPlugin").c_str(), NULL);
+        CreateDirectoryW(wUserDataPath.c_str(), NULL);
+    } else {
+        // Fallback to temp folder
+        wchar_t tempPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tempPath);
+        wUserDataPath = std::wstring(tempPath) + L"TotalCommanderMarkdownViewPlugin\\wv2data";
+        CreateDirectoryW((std::wstring(tempPath) + L"TotalCommanderMarkdownViewPlugin").c_str(), NULL);
+        CreateDirectoryW(wUserDataPath.c_str(), NULL);
+    }
     
     DebugLog("browserhost.cpp:CreateBrowser", "Calling CreateCoreWebView2EnvironmentWithOptions", "B");
 

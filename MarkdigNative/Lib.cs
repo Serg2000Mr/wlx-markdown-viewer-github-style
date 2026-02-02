@@ -78,6 +78,7 @@ public static class Lib
             if (all || extensions.Contains("smartypants", StringComparison.OrdinalIgnoreCase)) builder.UseSmartyPants();
             if (all || extensions.Contains("autoidentifiers", StringComparison.OrdinalIgnoreCase)) builder.UseAutoIdentifiers();
             if (all || extensions.Contains("tasklists", StringComparison.OrdinalIgnoreCase)) builder.UseTaskLists();
+            if (all || extensions.Contains("diagrams", StringComparison.OrdinalIgnoreCase)) builder.UseDiagrams();
             if (all || extensions.Contains("yaml", StringComparison.OrdinalIgnoreCase)) builder.UseYamlFrontMatter();
 
             var pipeline = builder.Build();
@@ -93,6 +94,9 @@ public static class Lib
                 sb.Append(File.ReadAllText(cssFile));
             }
             sb.Append("</style>");
+            // Add Mermaid.js for diagram rendering
+            sb.AppendLine("<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js'></script>");
+            sb.AppendLine("<script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>");
             sb.AppendLine("</head>");
             sb.AppendLine("<body>");
             sb.AppendLine(Markdown.ToHtml(source, pipeline));
