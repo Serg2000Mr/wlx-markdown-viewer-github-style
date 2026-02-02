@@ -6,59 +6,451 @@
 #include <mshtmdid.h>
 #include <comutil.h>
 
+#include <thread>
+#include <vector>
 #include "browserhost.h"
 #include "functions.h"
+
+using namespace Microsoft::WRL;
 
 CBrowserHost::CBrowserHost() :
 	mImagesHidden(false),
 	mEventsCookie(0),
-	mRefCount(0),
+	mRefCount(1),
 	fSearchHighlightMode(1),
-	fStatusBarUnlockTime(0)
+	fStatusBarUnlockTime(0),
+	mIsWebView2Initialized(false),
+	mZoomFactor(1.0),
+	mScrollTop(0)
 {
+    DebugLog("browserhost.cpp:CBrowserHost", "Constructor", "B");
 	mLastSearchString.Empty();
 	mLastSearchFlags = 0;
 }
 CBrowserHost::~CBrowserHost()
 {
+    DebugLog("browserhost.cpp:~CBrowserHost", "Destructor", "B");
 }
 void CBrowserHost::Quit()
 {
-	if(!mWebBrowser)
-		return;
-	AtlUnadvise((IUnknown*)mWebBrowser, DIID_DWebBrowserEvents, mEventsCookie);
+    DebugLog("browserhost.cpp:Quit", "Entry", "B");
+	if (mWebViewController)
+	{
+		mWebViewController->Close();
+		mWebViewController.Release();
+	}
+	if (mWebView)
+	{
+		mWebView.Release();
+	}
 
-	mWebBrowser->Stop();
-	mWebBrowser->Quit();
+	if(mWebBrowser)
+	{
+		AtlUnadvise((IUnknown*)mWebBrowser, DIID_DWebBrowserEvents, mEventsCookie);
 
-	CComQIPtr<IOleObject> ole_object(mWebBrowser);
-	if(ole_object)
-		ole_object->Close(0);
+		mWebBrowser->Stop();
+		mWebBrowser->Quit();
 
-	if(!(options.flags&OPT_MOZILLA))
-		mWebBrowser.Release();
+		CComQIPtr<IOleObject> ole_object(mWebBrowser);
+		if(ole_object)
+			ole_object->Close(0);
+
+		if(!(options.flags&OPT_MOZILLA))
+			mWebBrowser.Release();
+	}
+    
+    // Final release of this object
+    DebugLog("browserhost.cpp:Quit", "Final Release", "B");
 	Release();
 }
 
 CLSID CLSID_MozillaBrowser = {0x1339B54C,0x3453,0x11D2,{0x93,0xB9,0x00,0x00,0x00,0x00,0x00,0x00}};
 bool CBrowserHost::CreateBrowser(HWND hParent)
 {
-	HRESULT hr;
-	AddRef();
-	hr = mWebBrowser.CoCreateInstance((options.flags&OPT_MOZILLA)?CLSID_MozillaBrowser:CLSID_WebBrowser/*, NULL, CLSCTX_INPROC*/);
-	if(hr!=S_OK)
-		return false;
-	CComQIPtr<IOleObject> ole_object(mWebBrowser);
-	hr = ole_object->SetClientSite((IOleClientSite*)this);
-	hr = AtlAdvise(CComQIPtr<IUnknown, &IID_IUnknown>(mWebBrowser), (IDispatch*)this, DIID_DWebBrowserEvents, &mEventsCookie);
+	mParentWin = hParent;
+	AddRef(); // Keep object alive for async callbacks
 
-	mParentWin=hParent;
-	Resize();
-	MSG msg;
-	RECT rect;
-	GetRect(&rect);
-	ole_object->DoVerb(OLEIVERB_INPLACEACTIVATE, &msg, (IOleClientSite*)this, 0, mParentWin, &rect);
-	mImagesHidden = false;
+    wchar_t dllPath[MAX_PATH];
+    GetModuleFileNameW(hinst, dllPath, MAX_PATH);
+    PathRemoveFileSpecW(dllPath);
+    
+    std::wstring wUserDataPath = std::wstring(dllPath) + L"\\wv2data";
+    CreateDirectoryW(wUserDataPath.c_str(), NULL);
+    
+    DebugLog("browserhost.cpp:CreateBrowser", "Calling CreateCoreWebView2EnvironmentWithOptions", "B");
+
+	HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, wUserDataPath.c_str(), nullptr,
+		Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+				if (FAILED(result)) {
+                    Release(); // Balance AddRef from CreateBrowser
+                    return result;
+                }
+
+                AddRef(); // For the next callback
+				HRESULT hr_controller = env->CreateCoreWebView2Controller(mParentWin,
+					Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[this, env](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+							if (FAILED(result)) {
+                                Release();
+                                return result;
+                            }
+
+							mWebViewController = controller;
+							HRESULT hr_wv = mWebViewController->get_CoreWebView2(&mWebView);
+                            if (FAILED(hr_wv) || !mWebView) {
+                                DebugLog("browserhost.cpp:CreateBrowser", "Failed to get WebView", "B");
+                                Release();
+                                return hr_wv;
+                            }
+                            DebugLog("browserhost.cpp:CreateBrowser", "Controller/WebView ptrs acquired", "B");
+
+							// Register events
+							mWebView->add_DocumentTitleChanged(
+								Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
+									[this](ICoreWebView2* sender, IUnknown* args) -> HRESULT {
+                                        DebugLog("browserhost.cpp:OnTitleChanged", "Entry", "B");
+										UpdateTitle();
+										return S_OK;
+									}).Get(), nullptr);
+
+							mWebView->AddScriptToExecuteOnDocumentCreated(
+								L"window.addEventListener('scroll', () => { window.chrome.webview.postMessage({type: 'scroll', top: window.pageYOffset}); });"
+                                L"console.log = (m) => { window.chrome.webview.postMessage({type: 'log', message: m}); };"
+                                L"console.error = (m) => { window.chrome.webview.postMessage({type: 'error', message: m}); };"
+                                L"window.onerror = (m, s, l, c, e) => { window.chrome.webview.postMessage({type: 'error', message: m + ' at ' + s + ':' + l}); };",
+								nullptr);
+
+							mWebView->add_WebMessageReceived(
+								Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+									[this](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+										LPWSTR message;
+										args->get_WebMessageAsJson(&message);
+										// Simple JSON parsing (manually or just check for "top")
+										if (message && wcsstr(message, L"\"top\":")) {
+											wchar_t* pos = wcsstr(message, L"\"top\":");
+											if (pos) {
+												long newScroll = _wtoi(pos + 6);
+                                                if (abs(newScroll - mScrollTop) > 10) { // Only log significant changes
+                                                    mScrollTop = newScroll;
+                                                    DebugLog("browserhost.cpp:OnWebMessage", "Significant scroll change", "B");
+                                                } else {
+                                                    mScrollTop = newScroll;
+                                                }
+											}
+										}
+                                        else if (message && wcsstr(message, L"\"type\":\"error\"")) {
+                                            DebugLogW("browserhost.cpp:OnWebMessage", (L"Browser Error: " + std::wstring(message)).c_str(), "A");
+                                        }
+                                        else if (message && wcsstr(message, L"\"type\":\"log\"")) {
+                                            DebugLogW("browserhost.cpp:OnWebMessage", (L"Browser Log: " + std::wstring(message)).c_str(), "A");
+                                        }
+										CoTaskMemFree(message);
+										return S_OK;
+									}).Get(), nullptr);
+
+							mWebView->add_NavigationCompleted(
+								Callback<ICoreWebView2NavigationCompletedEventHandler>(
+									[this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                                        DebugLog("browserhost.cpp:OnNavCompleted", "Entry", "B");
+                                        BOOL isSuccess;
+                                        args->get_IsSuccess(&isSuccess);
+                                        COREWEBVIEW2_WEB_ERROR_STATUS status;
+                                        args->get_WebErrorStatus(&status);
+                                        char msg[128];
+                                        sprintf(msg, "Nav completed: success=%d, status=%d", isSuccess, status);
+                                        DebugLog("browserhost.cpp:OnNavCompleted", msg, "A");
+										if (options.flags & OPT_SAVEPOS)
+											LoadPosition();
+										return S_OK;
+									}).Get(), nullptr);
+
+                            // Add WebResourceRequested to debug image loading
+                            mWebViewEnvironment = env; // Save environment for resource responses
+                            mWebView->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+                            mWebView->AddWebResourceRequestedFilter(L"https://img.youtube.com/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE);
+                            
+                            mWebView->add_WebResourceRequested(
+                                Callback<ICoreWebView2WebResourceRequestedEventHandler>(
+                                    [this](ICoreWebView2* sender, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+                                        CComPtr<ICoreWebView2WebResourceRequest> request;
+                                        args->get_Request(&request);
+                                        LPWSTR uri;
+                                        request->get_Uri(&uri);
+                                        std::wstring wUri = uri;
+                                        
+                                        if (wUri.find(L"https://img.youtube.com/") == 0) {
+                                            DebugLogW("browserhost.cpp:OnResourceRequested", (L"Proxying YouTube request: " + wUri).c_str(), "A");
+                                            
+                                            // Use deferral to avoid blocking the UI thread and subsequent resources
+                                            CComPtr<ICoreWebView2Deferral> deferral;
+                                            args->GetDeferral(&deferral);
+                                            
+                                            // Capture necessary objects for background thread
+                                            // We need to keep a reference to this to ensure it's not destroyed
+                                            this->AddRef();
+                                            
+                                            // Try alternative YouTube thumbnail domains
+                                            // Replace img.youtube.com with i.ytimg.com (same CDN, different domain)
+                                            std::wstring altUri = wUri;
+                                            size_t pos = altUri.find(L"img.youtube.com");
+                                            if (pos != std::wstring::npos) {
+                                                altUri.replace(pos, 15, L"i.ytimg.com");
+                                            }
+                                            DebugLogW("browserhost.cpp:OnResourceRequested", (L"Trying alt domain: " + altUri).c_str(), "A");
+                                            
+                                            std::thread([this, altUri, args, deferral]() {
+                                                // Use a full browser User-Agent
+                                                HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+                                                    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+                                                if (hSession) {
+                                                    // Set timeouts: 5s resolve, 5s connect, 10s send, 10s receive
+                                                    WinHttpSetTimeouts(hSession, 5000, 5000, 10000, 10000);
+                                                    
+                                                    // Enable TLS 1.2 and 1.3
+                                                    DWORD dwProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+                                                    WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &dwProtocols, sizeof(dwProtocols));
+                                                    
+                                                    URL_COMPONENTS urlComp = {0};
+                                                    urlComp.dwStructSize = sizeof(urlComp);
+                                                    urlComp.dwHostNameLength = (DWORD)-1;
+                                                    urlComp.dwUrlPathLength = (DWORD)-1;
+                                                    urlComp.dwExtraInfoLength = (DWORD)-1;
+                                                    
+                                                    if (WinHttpCrackUrl(altUri.c_str(), 0, 0, &urlComp)) {
+                                                        std::wstring host(urlComp.lpszHostName, urlComp.dwHostNameLength);
+                                                        HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), urlComp.nPort, 0);
+                                                        if (hConnect) {
+                                                            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", urlComp.lpszUrlPath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0);
+                                                            if (hRequest) {
+                                                                // Ignore SSL errors for testing
+                                                                DWORD dwSSLFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
+                                                                WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSSLFlags, sizeof(dwSSLFlags));
+
+                                                                // Add headers to look like a real browser
+                                                                WinHttpAddRequestHeaders(hRequest, L"Referer: https://www.youtube.com/\r\n", (ULONG)-1, WINHTTP_ADDREQ_FLAG_ADD);
+                                                                WinHttpAddRequestHeaders(hRequest, L"Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8\r\n", (ULONG)-1, WINHTTP_ADDREQ_FLAG_ADD);
+                                                                WinHttpAddRequestHeaders(hRequest, L"Sec-Fetch-Dest: image\r\n", (ULONG)-1, WINHTTP_ADDREQ_FLAG_ADD);
+                                                                WinHttpAddRequestHeaders(hRequest, L"Sec-Fetch-Mode: no-cors\r\n", (ULONG)-1, WINHTTP_ADDREQ_FLAG_ADD);
+                                                                WinHttpAddRequestHeaders(hRequest, L"Sec-Fetch-Site: cross-site\r\n", (ULONG)-1, WINHTTP_ADDREQ_FLAG_ADD);
+                                                                
+                                                                if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                                                                    WinHttpReceiveResponse(hRequest, NULL)) 
+                                                                {
+                                                                    DWORD dwStatusCode = 0;
+                                                                    DWORD dwSize = sizeof(dwStatusCode);
+                                                                    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &dwStatusCode, &dwSize, WINHTTP_NO_HEADER_INDEX);
+                                                                    
+                                                                    char statusMsg[128];
+                                                                    sprintf(statusMsg, "  YouTube Server Response: %u", dwStatusCode);
+                                                                    DebugLog("browserhost.cpp:OnResourceRequested", statusMsg, "A");
+
+                                                                    if (dwStatusCode == 200) {
+                                                                        std::vector<char> buffer;
+                                                                        DWORD dwDownloaded = 0;
+                                                                        do {
+                                                                            dwSize = 0;
+                                                                            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) break;
+                                                                            if (dwSize == 0) break;
+                                                                            
+                                                                            size_t oldSize = buffer.size();
+                                                                            buffer.resize(oldSize + dwSize);
+                                                                            if (!WinHttpReadData(hRequest, buffer.data() + oldSize, dwSize, &dwDownloaded)) break;
+                                                                            if (dwDownloaded == 0) break;
+                                                                            if (dwDownloaded < dwSize) buffer.resize(oldSize + dwDownloaded);
+                                                                        } while (dwSize > 0);
+                                                                        
+                                                                        if (!buffer.empty()) {
+                                                                            IStream* pStream = SHCreateMemStream((const BYTE*)buffer.data(), (UINT)buffer.size());
+                                                                            if (pStream) {
+                                                                                CComPtr<ICoreWebView2WebResourceResponse> response;
+                                                                                // Creating response on background thread is generally OK if environment is thread-safe
+                                                                                HRESULT hr = mWebViewEnvironment->CreateWebResourceResponse(pStream, dwStatusCode, L"OK", L"Content-Type: image/jpeg", &response);
+                                                                                if (SUCCEEDED(hr)) {
+                                                                                    args->put_Response(response);
+                                                                                    DebugLog("browserhost.cpp:OnResourceRequested", "  Successfully proxied via WinHTTP (Async)", "A");
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    char errMsg[128];
+                                                                    sprintf(errMsg, "  WinHttpSendRequest/ReceiveResponse failed: %u", GetLastError());
+                                                                    DebugLog("browserhost.cpp:OnResourceRequested", errMsg, "A");
+                                                                }
+                                                                WinHttpCloseHandle(hRequest);
+                                                            }
+                                                            WinHttpCloseHandle(hConnect);
+                                                        }
+                                                    }
+                                                    WinHttpCloseHandle(hSession);
+                                                }
+                                                
+                                                deferral->Complete();
+                                                this->Release();
+                                            }).detach();
+                                            
+                                            CoTaskMemFree(uri);
+                                            return S_OK;
+                                        }
+
+                                        if (wUri.find(L"jpg") != std::wstring::npos || 
+                                            wUri.find(L"png") != std::wstring::npos ||
+                                            wUri.find(L"youtube") != std::wstring::npos) 
+                                        {
+                                            char logMsg[1024];
+                                            sprintf(logMsg, "Resource Requested: %s", WideToUtf8(wUri).c_str());
+                                            DebugLog("browserhost.cpp:OnResourceRequested", logMsg, "A");
+                                            
+                                            CComPtr<ICoreWebView2HttpRequestHeaders> headers;
+                                            request->get_Headers(&headers);
+                                            if (headers) {
+                                                LPWSTR referer = nullptr;
+                                                headers->GetHeader(L"Referer", &referer);
+                                                if (referer) {
+                                                    sprintf(logMsg, "  Original Referer: %s", WideToUtf8(referer).c_str());
+                                                    DebugLog("browserhost.cpp:OnResourceRequested", logMsg, "A");
+                                                    CoTaskMemFree(referer);
+                                                    
+                                                    if (wUri.find(L"youtube") != std::wstring::npos) {
+                                                        headers->RemoveHeader(L"Referer");
+                                                        DebugLog("browserhost.cpp:OnResourceRequested", "  Removed Referer for YouTube request", "A");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        CoTaskMemFree(uri);
+                                        return S_OK;
+                                    }).Get(), nullptr);
+
+                            // Add ResponseReceived to see what happens
+                            CComQIPtr<ICoreWebView2_2> webView2 = mWebView;
+                            if (webView2) {
+                                webView2->add_WebResourceResponseReceived(
+                                    Callback<ICoreWebView2WebResourceResponseReceivedEventHandler>(
+                                        [this](ICoreWebView2* sender, ICoreWebView2WebResourceResponseReceivedEventArgs* args) -> HRESULT {
+                                            CComPtr<ICoreWebView2WebResourceRequest> request;
+                                            args->get_Request(&request);
+                                            CComPtr<ICoreWebView2WebResourceResponseView> response;
+                                            args->get_Response(&response);
+                                            
+                                            LPWSTR uri;
+                                            request->get_Uri(&uri);
+                                            std::wstring wUri = uri;
+                                            
+                                            if (wUri.find(L"jpg") != std::wstring::npos || 
+                                                wUri.find(L"png") != std::wstring::npos ||
+                                                wUri.find(L"youtube") != std::wstring::npos) 
+                                            {
+                                                int status;
+                                                response->get_StatusCode(&status);
+                                                char logMsg[1024];
+                                                sprintf(logMsg, "Resource Response: %s, Status: %d", WideToUtf8(wUri).c_str(), status);
+                                                DebugLog("browserhost.cpp:OnResourceResponse", logMsg, "A");
+                                            }
+                                            
+                                            CoTaskMemFree(uri);
+                                            return S_OK;
+                                        }).Get(), nullptr);
+                            }
+
+                            mWebView->add_NavigationStarting(
+                                Callback<ICoreWebView2NavigationStartingEventHandler>(
+                                    [this](ICoreWebView2* sender, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                                        LPWSTR uri;
+                                        args->get_Uri(&uri);
+                                        std::wstring wUri = uri;
+                                        DebugLogW("browserhost.cpp:OnNavStarting", wUri.c_str(), "A");
+                                        
+                                        // If it's not our internal page or internal resource, open in default browser
+                                        bool isInternal = (wUri.find(L"markdown.internal") != std::wstring::npos) || 
+                                                         (wUri.find(L"data:text/html") == 0) ||
+                                                         (wUri.find(L"about:blank") == 0);
+                                        
+                                        char logMsg[512];
+                                        sprintf(logMsg, "URI: %s, isInternal: %d", WideToUtf8(wUri).c_str(), isInternal);
+                                        DebugLog("browserhost.cpp:OnNavStarting", logMsg, "A");
+
+                                        if (!isInternal) {
+                                            args->put_Cancel(TRUE);
+                                            ShellExecuteW(NULL, L"open", wUri.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                                            DebugLog("browserhost.cpp:OnNavStarting", "Navigation cancelled and sent to ShellExecute", "A");
+                                        }
+                                        
+                                        CoTaskMemFree(uri);
+                                        return S_OK;
+                                    }).Get(), nullptr);
+
+							// Set settings
+							CComPtr<ICoreWebView2Settings> settings;
+							mWebView->get_Settings(&settings);
+							if (settings) {
+                                DebugLog("browserhost.cpp:CreateBrowser", "Setting up settings", "B");
+								settings->put_IsScriptEnabled(TRUE);
+								settings->put_AreDefaultContextMenusEnabled(TRUE);
+								settings->put_IsStatusBarEnabled(FALSE);
+                                
+                                CComQIPtr<ICoreWebView2Settings2> settings2 = settings;
+                                if (settings2) {
+                                    settings2->put_UserAgent(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                                    DebugLog("browserhost.cpp:CreateBrowser", "UserAgent set", "B");
+                                }
+							}
+
+                            UpdateFolderMapping(mCurrentFolder);
+
+							Resize();
+
+							mIsWebView2Initialized = true;
+                            DebugLog("browserhost.cpp:CreateBrowser", "Init Flag Set", "B");
+
+							if (mPendingHTML.length() > 0) {
+                                DebugLog("browserhost.cpp:CreateBrowser", "Navigating pending HTML", "A");
+								HRESULT hr_nav = mWebView->NavigateToString(mPendingHTML.c_str());
+                                char navMsg[128];
+                                sprintf(navMsg, "NavigateToString completed, HR=0x%08X", hr_nav);
+                                DebugLog("browserhost.cpp:CreateBrowser", navMsg, "A");
+								mPendingHTML.clear();
+							}
+							else if (mPendingURL.Length() > 0) {
+                                DebugLogW("browserhost.cpp:CreateBrowser", L"Navigating pending URL", "A");
+                                std::wstring url = (wchar_t*)mPendingURL;
+                                
+                                if (url.length() > 2 && url[1] == L':') {
+                                    wchar_t folder[MAX_PATH];
+                                    wcscpy(folder, url.c_str());
+                                    PathRemoveFileSpecW(folder);
+                                    UpdateFolderMapping(folder);
+                                    
+                                    std::wstring filename = PathFindFileNameW(url.c_str());
+                                    url = L"https://markdown.internal/" + filename;
+                                    DebugLogW("browserhost.cpp:CreateBrowser", (L"Using mapped URL: " + url).c_str(), "A");
+                                }
+                                
+								HRESULT hr_nav = mWebView->Navigate(url.c_str());
+                                char navMsg[128];
+                                sprintf(navMsg, "Navigate completed, HR=0x%08X", hr_nav);
+                                DebugLog("browserhost.cpp:CreateBrowser", navMsg, "A");
+								mPendingURL.Empty();
+							}
+
+                            Release(); // Done with initialization
+							return S_OK;
+						}).Get());
+                
+                Release(); // Env callback done
+				return S_OK;
+			}).Get());
+
+	if (FAILED(hr)) {
+		// Fallback to IE if WebView2 fails? 
+		// For now, just return false or try IE.
+		// Given the requirements, we want WebView2.
+		Release();
+		return false;
+	}
+
 	return true;
 }
 void CBrowserHost::GetRect(LPRECT rect)
@@ -82,12 +474,192 @@ void CBrowserHost::Resize()
 {
 	RECT rect;
 	GetRect(&rect);
-	CComQIPtr<IOleInPlaceObject> inplace_object(mWebBrowser);
-	inplace_object->SetObjectRects(&rect, &rect);
+	if (mWebViewController)
+	{
+		mWebViewController->put_Bounds(rect);
+	}
+
+	if (mWebBrowser)
+	{
+		CComQIPtr<IOleInPlaceObject> inplace_object(mWebBrowser);
+		if (inplace_object)
+			inplace_object->SetObjectRects(&rect, &rect);
+	}
+}
+
+void CBrowserHost::UpdateFolderMapping(const std::wstring& folder)
+{
+    if (!mWebView || folder.empty()) return;
+    
+    CComQIPtr<ICoreWebView2_3> webView3 = mWebView;
+    if (webView3) {
+        mCurrentFolder = folder;
+        // Remove trailing backslash if present
+        if (!mCurrentFolder.empty() && mCurrentFolder.back() == L'\\') {
+            mCurrentFolder.pop_back();
+        }
+        
+        webView3->ClearVirtualHostNameToFolderMapping(L"markdown.internal");
+        HRESULT hr = webView3->SetVirtualHostNameToFolderMapping(
+            L"markdown.internal", mCurrentFolder.c_str(),
+            COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+            
+        char msg[256];
+        sprintf(msg, "Updated mapping for markdown.internal to %s, HR=0x%08X", WideToUtf8(mCurrentFolder).c_str(), hr);
+        DebugLog("browserhost.cpp:UpdateFolderMapping", msg, "A");
+    }
+}
+
+void CBrowserHost::Navigate(const wchar_t* url)
+{
+    DebugLogW("browserhost.cpp:Navigate", url, "A");
+	if (mIsWebView2Initialized && mWebView)
+	{
+        std::wstring finalUrl = url;
+        // If it's a local path (starts with X:), check if we can use our mapping
+        if (finalUrl.length() > 2 && finalUrl[1] == L':') {
+            wchar_t folder[MAX_PATH];
+            wcscpy(folder, finalUrl.c_str());
+            PathRemoveFileSpecW(folder);
+            
+            UpdateFolderMapping(folder);
+            
+            std::wstring filename = PathFindFileNameW(finalUrl.c_str());
+            finalUrl = L"https://markdown.internal/" + filename;
+            DebugLogW("browserhost.cpp:Navigate", (L"Using mapped URL: " + finalUrl).c_str(), "A");
+        }
+        
+		HRESULT hr = mWebView->Navigate(finalUrl.c_str());
+        char msg[128];
+        sprintf(msg, "WebView2 Navigate HR=0x%08X", hr);
+        DebugLog("browserhost.cpp:Navigate", msg, "A");
+	}
+	else if (mWebBrowser)
+	{
+		mWebBrowser->Navigate(CComBSTR(url), NULL, NULL, NULL, NULL);
+        DebugLog("browserhost.cpp:Navigate", "WebBrowser Navigate", "A");
+	}
+	else
+	{
+		mPendingURL = url;
+		mPendingHTML.clear();
+        DebugLog("browserhost.cpp:Navigate", "Pending URL", "A");
+	}
+}
+
+void CBrowserHost::GoBack()
+{
+	if (mIsWebView2Initialized && mWebView)
+		mWebView->GoBack();
+	else if (mWebBrowser)
+		mWebBrowser->GoBack();
+}
+
+void CBrowserHost::GoForward()
+{
+	if (mIsWebView2Initialized && mWebView)
+		mWebView->GoForward();
+	else if (mWebBrowser)
+		mWebBrowser->GoForward();
+}
+
+void CBrowserHost::Stop()
+{
+	if (mIsWebView2Initialized && mWebView)
+		mWebView->Stop();
+	else if (mWebBrowser)
+		mWebBrowser->Stop();
+}
+
+void CBrowserHost::Print()
+{
+	if (mIsWebView2Initialized && mWebView)
+	{
+		// WebView2 print is complex, but we can use window.print() via script
+		mWebView->ExecuteScript(L"window.print();", nullptr);
+	}
+	else if (mWebBrowser)
+	{
+		CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = mWebBrowser;
+		if (pCmd)
+			pCmd->Exec(NULL, OLECMDID_PRINT, OLECMDEXECOPT_DODEFAULT, NULL, NULL);
+	}
+}
+
+void CBrowserHost::ZoomIn()
+{
+	if (mIsWebView2Initialized && mWebViewController)
+	{
+		mZoomFactor *= 1.25;
+		if (mZoomFactor > 5.0) mZoomFactor = 5.0;
+		mWebViewController->put_ZoomFactor(mZoomFactor);
+	}
+	else if (mWebBrowser)
+	{
+		CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = mWebBrowser;
+		if (pCmd)
+		{
+			VARIANTARG v = { 0 }, vi = { 0 };
+			pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, NULL, &v);
+			vi.vt = VT_I4;
+			vi.intVal = (int)(v.intVal * 1.25);
+			pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, NULL);
+		}
+	}
+}
+
+void CBrowserHost::ZoomOut()
+{
+	if (mIsWebView2Initialized && mWebViewController)
+	{
+		mZoomFactor /= 1.25;
+		if (mZoomFactor < 0.25) mZoomFactor = 0.25;
+		mWebViewController->put_ZoomFactor(mZoomFactor);
+	}
+	else if (mWebBrowser)
+	{
+		CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = mWebBrowser;
+		if (pCmd)
+		{
+			VARIANTARG v = { 0 }, vi = { 0 };
+			pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, NULL, &v);
+			vi.vt = VT_I4;
+			vi.intVal = (int)(v.intVal / 1.25);
+			pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, NULL);
+		}
+	}
+}
+
+void CBrowserHost::ZoomReset()
+{
+	if (mIsWebView2Initialized && mWebViewController)
+	{
+		mZoomFactor = 1.0;
+		mWebViewController->put_ZoomFactor(mZoomFactor);
+	}
+	else if (mWebBrowser)
+	{
+		CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = mWebBrowser;
+		if (pCmd)
+		{
+			VARIANTARG vi = { 0 };
+			vi.vt = VT_I4;
+			vi.intVal = 100;
+			pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, NULL);
+		}
+	}
 }
 
 void CBrowserHost::Focus()
 {
+	if (mIsWebView2Initialized && mWebViewController)
+	{
+		mWebViewController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+		return;
+	}
+
+	if (!mWebBrowser) return;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	if(html_disp)
@@ -121,64 +693,110 @@ void CBrowserHost::Focus()
 
 void CBrowserHost::SavePosition()
 {
-	CComPtr<IDispatch> html_disp;
-	mWebBrowser->get_Document(&html_disp);
-	if(!html_disp)
-		return;
-	CComQIPtr<IHTMLDocument2> html_doc2(html_disp);
-	if(!html_doc2)
-		return;
-	CComPtr<IHTMLElement> body_el;
-    html_doc2->get_body( &body_el );
-	if(!body_el)
-		return;
-	CComQIPtr<IHTMLElement2> body_el2(body_el);
-	if(!body_el2)
-		return;
-	long position;
-    body_el2->get_scrollTop( &position );
+	long position = 0;
+	BSTR loc_wide = NULL;
 
-	BSTR loc_wide;
+	if (mIsWebView2Initialized && mWebView)
+	{
+		position = mScrollTop;
+		mWebView->get_Source(&loc_wide);
+        DebugLog("browserhost.cpp:SavePosition", "WebView2 Source acquired", "B");
+	}
+	else if (mWebBrowser)
+	{
+		CComPtr<IDispatch> html_disp;
+		mWebBrowser->get_Document(&html_disp);
+		if (html_disp)
+		{
+			CComQIPtr<IHTMLDocument2> html_doc2(html_disp);
+			if (html_doc2)
+			{
+				CComPtr<IHTMLElement> body_el;
+				html_doc2->get_body(&body_el);
+				if (body_el)
+				{
+					CComQIPtr<IHTMLElement2> body_el2(body_el);
+					if (body_el2)
+						body_el2->get_scrollTop(&position);
+				}
+			}
+		}
+		mWebBrowser->get_LocationURL(&loc_wide);
+	}
+
+	if (!loc_wide)
+		return;
+
 	char loc_char[320];
-	mWebBrowser->get_LocationURL(&loc_wide);
 	WideCharToMultiByte(CP_ACP,NULL,loc_wide,-1,loc_char,320,NULL,FALSE);
 	SysFreeString(loc_wide);
 
 	char ini_path[512];
 	strcpy(ini_path, options.IniFileName);
-	strcpy(strrchr(ini_path, '\\'), "\\positions.ini");
+	char* last_slash = strrchr(ini_path, '\\');
+	if (last_slash)
+		strcpy(last_slash, "\\positions.ini");
+	else
+		return;
+
 	char str_pos[16];
 	ltoa(position,str_pos,10);
 	WritePrivateProfileString("HTML", loc_char, str_pos, ini_path);
 }
+
 void CBrowserHost::LoadPosition()
 {
-	BSTR loc_wide;
+	BSTR loc_wide = NULL;
+	if (mIsWebView2Initialized && mWebView)
+	{
+		mWebView->get_Source(&loc_wide);
+	}
+	else if (mWebBrowser)
+	{
+		mWebBrowser->get_LocationURL(&loc_wide);
+	}
+
+	if (!loc_wide)
+		return;
+
 	char loc_char[320];
-	mWebBrowser->get_LocationURL(&loc_wide);
 	WideCharToMultiByte(CP_ACP,NULL,loc_wide,-1,loc_char,320,NULL,FALSE);
 	SysFreeString(loc_wide);
 
 	char ini_path[512];
 	strcpy(ini_path,options.IniFileName);
-	strcpy(strrchr(ini_path, '\\'),"\\positions.ini");
+	char* last_slash = strrchr(ini_path, '\\');
+	if (last_slash)
+		strcpy(last_slash, "\\positions.ini");
+	else
+		return;
+
 	long position = GetPrivateProfileInt("HTML", loc_char, 0, ini_path);
 	
-	CComPtr<IDispatch> html_disp;
-	mWebBrowser->get_Document(&html_disp);
-	if(!html_disp)
-		return;
-	CComQIPtr<IHTMLDocument2> html_doc2(html_disp);
-	if(!html_doc2)
-		return;
-	CComPtr<IHTMLElement> body_el;
-    html_doc2->get_body( &body_el );
-	if(!body_el)
-		return;
-	CComQIPtr<IHTMLElement2> body_el2(body_el);
-	if(!body_el2)
-		return;
-    body_el2->put_scrollTop( position );
+	if (mIsWebView2Initialized && mWebView)
+	{
+		wchar_t script[128];
+		swprintf(script, 128, L"window.scrollTo(0, %ld);", position);
+		mWebView->ExecuteScript(script, nullptr);
+	}
+	else if (mWebBrowser)
+	{
+		CComPtr<IDispatch> html_disp;
+		mWebBrowser->get_Document(&html_disp);
+		if(!html_disp)
+			return;
+		CComQIPtr<IHTMLDocument2> html_doc2(html_disp);
+		if(!html_doc2)
+			return;
+		CComPtr<IHTMLElement> body_el;
+		html_doc2->get_body( &body_el );
+		if(!body_el)
+			return;
+		CComQIPtr<IHTMLElement2> body_el2(body_el);
+		if(!body_el2)
+			return;
+		body_el2->put_scrollTop( position );
+	}
 }
 
 void CBrowserHost::SetStatusText(const wchar_t* str, DWORD delay)
@@ -194,6 +812,9 @@ bool CBrowserHost::IsSearchHighlightEnabled()
 		return false;
 	else if(fSearchHighlightMode==2)
 		return true;
+
+	if (!mWebBrowser) return false;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	if(!html_disp)
@@ -224,6 +845,9 @@ void CBrowserHost::UpdateSearchHighlight()
 
 void CBrowserHost::ClearSearchHighlight()
 {
+	if (!mWebBrowser)
+		return;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	CComQIPtr<IHighlightRenderingServices> hl_services(html_disp);
@@ -270,6 +894,9 @@ CAtlStringW GetSearchStatusString(int number, bool finished)
 
 bool CBrowserHost::HighlightStrings(CComBSTR search, long search_flags)
 {
+	if (!mWebBrowser)
+		return false;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	if(!html_disp)
@@ -344,6 +971,9 @@ bool CBrowserHost::HighlightStrings(CComBSTR search, long search_flags)
 
 void CBrowserHost::SetCurrentSearchHighlight(IHTMLTxtRange* txt_range)
 {
+	if (!mWebBrowser)
+		return;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	if(!html_disp)
@@ -386,8 +1016,32 @@ void CBrowserHost::SetCurrentSearchHighlight(IHTMLTxtRange* txt_range)
 	hl_services->AddSegment(displ_ptr_start, displ_ptr_end, render_style, &mCurrentSearchHighlightSegment);
 }
 
+void CBrowserHost::Search(const wchar_t* text, bool forward, bool matchCase, bool wholeWord)
+{
+	if (mIsWebView2Initialized && mWebView)
+	{
+		std::wstring script = L"window.find('";
+		script += text;
+		script += L"', ";
+		script += matchCase ? L"true" : L"false";
+		script += L", ";
+		script += forward ? L"false" : L"true"; // window.find's third param is aBackwards
+		script += L", true, "; // aWrapAround
+		script += wholeWord ? L"true" : L"false";
+		script += L", false, false);";
+
+		mWebView->ExecuteScript(script.c_str(), nullptr);
+	}
+}
+
 bool CBrowserHost::FindText(CComBSTR search, long search_flags, bool backward)
 {
+	if (mIsWebView2Initialized && mWebView)
+	{
+		Search(search, !backward, (search_flags & 4) != 0, (search_flags & 2) != 0);
+		return true;
+	}
+
 	bool is_new_search = mLastSearchString!=search || mLastSearchFlags!=search_flags;
 	if(is_new_search)
 		mSearchTxtRange.Release();
@@ -610,6 +1264,9 @@ void CBrowserHost::HideShowImagesInHTMLDocument(IHTMLDocument2* lpHtmlDocument, 
 }
 void CBrowserHost::HideShowImages(bool remove)
 {
+	if (!mWebBrowser)
+		return;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	if(!html_disp)
@@ -628,15 +1285,18 @@ void CBrowserHost::ProcessHotkey(UINT Msg, DWORD Key, DWORD Info)
 	char str_action[80];
 	CAtlString full_name = GetFullKeyName(Key);
 	if((full_name=="F3" || full_name=="Shift+F3") && IsSearchHighlightEnabled())
-		mWebBrowser->ExecWB(OLECMDID_CLEARSELECTION, OLECMDEXECOPT_DONTPROMPTUSER, NULL, NULL);
+	{
+		if (mWebBrowser)
+			mWebBrowser->ExecWB(OLECMDID_CLEARSELECTION, OLECMDEXECOPT_DONTPROMPTUSER, NULL, NULL);
+	}
 	if((Msg==WM_KEYDOWN||Msg==WM_SYSKEYDOWN)&&GetPrivateProfileString("Hotkeys", (const char*)full_name, "", str_action, sizeof(str_action), options.IniFileName))
 	{
 		if(!strcmpi(str_action,"Back"))
-			mWebBrowser->GoBack();
+			GoBack();
 		else if(!strcmpi(str_action,"Forward"))
-			mWebBrowser->GoForward();
+			GoForward();
 		else if(!strcmpi(str_action,"Stop"))
-			mWebBrowser->Stop();
+			Stop();
 		else if(!strcmpi(str_action,"Refresh"))
 			RefreshBrowser(); // instead of mWebBrowser->Refresh();
 		else if(!strcmpi(str_action,"SavePosition"))
@@ -649,69 +1309,18 @@ void CBrowserHost::ProcessHotkey(UINT Msg, DWORD Key, DWORD Info)
 			HideShowImages(false);
 		else if(!strnicmp(str_action, "Cmd", 3))
 		{
-			static const int zoom_factors_cnt = 14;
-			static const int zoom_factors[zoom_factors_cnt] = {15, 25, 33, 50, 75, 100, 125, 150, 200, 300, 400, 500, 700, 1000};
-			CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = mWebBrowser;
-			VARIANTARG v;
-			HRESULT res;
-			if(pCmd)
-			{
-				if(!stricmp(str_action, "CmdFind"))
-					res = pCmd->Exec(NULL, OLECMDID_FIND, 0, NULL, &v);
-				else if(!stricmp(str_action, "CmdPrint"))
-					res = pCmd->Exec(NULL, OLECMDID_PRINT, 0, NULL, &v);
-				else if(!stricmp(str_action, "CmdPrintPreview"))
-					res = pCmd->Exec(NULL, OLECMDID_PRINTPREVIEW, 0, NULL, &v);
-				else if(!stricmp(str_action, "CmdPageSetup"))
-					res = pCmd->Exec(NULL, OLECMDID_PAGESETUP, 0, NULL, &v);
-				else if(!stricmp(str_action, "CmdProperties"))
-					res = pCmd->Exec(NULL, OLECMDID_PROPERTIES, 0, NULL, &v);
-				else if(!stricmp(str_action, "CmdSaveAs"))
-					res = pCmd->Exec(NULL, OLECMDID_SAVEAS, 0, NULL, &v);
-				else if(!stricmp(str_action, "CmdZoomIn"))
-				{
-					res = pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, NULL, &v);
-					VARIANTARG vi;
-					vi.vt = VT_I4;
-					//vi.intVal = v.intVal*1.5;
-					vi.intVal = v.intVal;
-					for(int i=0;i<zoom_factors_cnt;++i)
-						if(zoom_factors[i]>v.intVal)
-						{
-							vi.intVal = zoom_factors[i];
-							break;
-						}
-					res = pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, &v);
-				}
-				else if(!stricmp(str_action, "CmdZoomOut"))
-				{
-					res = pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, NULL, &v);
-					VARIANTARG vi;
-					vi.vt = VT_I4;
-					//vi.intVal = v.intVal/1.5;
-					vi.intVal = v.intVal;
-					for(int i=0;i<zoom_factors_cnt;++i)
-						if(zoom_factors[i]<v.intVal)
-							vi.intVal = zoom_factors[i];
-						else
-							break;
-					res = pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, &v);
-				}
-				else if(!stricmp(str_action, "CmdZoomDef"))
-				{
-					VARIANTARG vi;
-					vi.vt = VT_I4;
-					vi.intVal = 100;
-					res = pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, &v);
-				}
-			}
-			/*
-			if(pCmd)
-			{
-				const GUID GrID = {0xED016940, 0xBD5B, 0x11CF, {0xBA, 0x4E, 0x00, 0xC0, 0x4F, 0xD7, 0x08, 0x16}};
-				pCmd->Exec(&GrID, 1, NULL, NULL,NULL);
-			}
-			*/
+			if(!stricmp(str_action, "CmdFind"))
+				FindText(CComBSTR(L""), 0, false); // Or equivalent
+			else if(!stricmp(str_action, "CmdPrint"))
+				Print();
+			else if(!stricmp(str_action, "CmdPrintPreview"))
+				Print(); // No preview in WebView2 easy way
+			else if(!stricmp(str_action, "CmdZoomIn"))
+				ZoomIn();
+			else if(!stricmp(str_action, "CmdZoomOut"))
+				ZoomOut();
+			else if(!stricmp(str_action, "CmdZoomDef"))
+				ZoomReset();
 		}
 	}
 }
@@ -723,21 +1332,29 @@ void CBrowserHost::UpdateTitle()
 		CAtlStringW atlstr_text = buf;
 		BSTR title_wide=NULL;
 
-		CComPtr<IDispatch> html_disp;
-		mWebBrowser->get_Document(&html_disp);
-		if(html_disp)
+	if (mIsWebView2Initialized && mWebView)
+	{
+		mWebView->get_DocumentTitle(&title_wide);
+	}
+		else if (mWebBrowser)
 		{
-			CComQIPtr<IHTMLDocument2> html_doc2(html_disp);
-			if(html_doc2)
-				html_doc2->get_title(&title_wide);
+			CComPtr<IDispatch> html_disp;
+			mWebBrowser->get_Document(&html_disp);
+			if (html_disp)
+			{
+				CComQIPtr<IHTMLDocument2> html_doc2(html_disp);
+				if (html_doc2)
+					html_doc2->get_title(&title_wide);
+			}
+			if (!title_wide)
+				mWebBrowser->get_LocationName(&title_wide);
+			else if (!wcslen(title_wide))
+			{
+				SysFreeString(title_wide);
+				mWebBrowser->get_LocationName(&title_wide);
+			}
 		}
-		if(!title_wide)
-			mWebBrowser->get_LocationName(&title_wide);
-		else if(!wcslen(title_wide))
-		{
-			SysFreeString(title_wide);
-			mWebBrowser->get_LocationName(&title_wide);
-		}
+
 		if(title_wide)
 		{
 			atlstr_text.Replace(L"%TITLE",title_wide);
@@ -745,7 +1362,15 @@ void CBrowserHost::UpdateTitle()
 		}
 
 		BSTR loc_wide=NULL;
-		mWebBrowser->get_LocationURL(&loc_wide);
+	if (mIsWebView2Initialized && mWebView)
+	{
+		mWebView->get_Source(&loc_wide);
+	}
+		else if (mWebBrowser)
+		{
+			mWebBrowser->get_LocationURL(&loc_wide);
+		}
+
 		if(loc_wide)
 		{
 			wchar_t name[262],ext[262],dir[262],drive[5];
@@ -762,6 +1387,9 @@ void CBrowserHost::UpdateTitle()
 }
 bool CBrowserHost::FormFocused()
 {
+	if (!mWebBrowser)
+		return false;
+
 	CComPtr<IDispatch> html_disp;
 	mWebBrowser->get_Document(&html_disp);
 	if(!html_disp)
@@ -828,14 +1456,22 @@ STDMETHODIMP CBrowserHost::QueryInterface(REFIID riid, void ** ppvObject)
 
 ULONG STDMETHODCALLTYPE CBrowserHost::AddRef()
 { 
-	return ++mRefCount; 
+    ULONG rc = InterlockedIncrement((LONG*)&mRefCount);
+    char msg[64];
+    sprintf(msg, "rc=%d", rc);
+    DebugLog("browserhost.cpp:AddRef", msg, "B");
+	return rc; 
 }
 
 ULONG STDMETHODCALLTYPE CBrowserHost::Release()
 {
-    if(!--mRefCount)
+    ULONG rc = InterlockedDecrement((LONG*)&mRefCount);
+    char msg[64];
+    sprintf(msg, "rc=%d", rc);
+    DebugLog("browserhost.cpp:Release", msg, "B");
+    if(rc == 0)
         delete this;
-    return mRefCount;
+    return rc;
 }
 
 //---------------------------=|  IOleClientSite  |=---------------------------
@@ -916,21 +1552,38 @@ DWORD WINAPI NewWindowThreadFunc(LPVOID param)
 
 void CBrowserHost::LoadWebBrowserFromStreamWrapper(const BYTE* html, int length)
 {
-	IStream* pStream = NULL;
-	pStream = SHCreateMemStream(html, length + 1);
+	std::string s((const char*)html, length);
+	std::wstring ws = Utf8ToWide(s);
 
-	IDispatch* pHtmlDoc = NULL;
-	IPersistStreamInit* pPersistStreamInit = NULL;
+	if (mIsWebView2Initialized && mWebView)
+	{
+		mWebView->NavigateToString(ws.c_str());
+	}
+	else if (mWebBrowser)
+	{
+		IStream* pStream = NULL;
+		pStream = SHCreateMemStream(html, length + 1);
 
-	mWebBrowser->get_Document(&pHtmlDoc);
-	
-	pHtmlDoc->QueryInterface(IID_IPersistStreamInit, (void**)&pPersistStreamInit);
-	pPersistStreamInit->InitNew();
-	pPersistStreamInit->Load(pStream);
-	pPersistStreamInit->Release();
-	pHtmlDoc->Release();
+		IDispatch* pHtmlDoc = NULL;
+		IPersistStreamInit* pPersistStreamInit = NULL;
 
-	pStream->Release();
+		mWebBrowser->get_Document(&pHtmlDoc);
+
+		if (pHtmlDoc) {
+			pHtmlDoc->QueryInterface(IID_IPersistStreamInit, (void**)&pPersistStreamInit);
+			pPersistStreamInit->InitNew();
+			pPersistStreamInit->Load(pStream);
+			pPersistStreamInit->Release();
+			pHtmlDoc->Release();
+		}
+
+		pStream->Release();
+	}
+	else
+	{
+		mPendingHTML = ws;
+		mPendingURL.Empty();
+	}
 }
 
 HRESULT STDMETHODCALLTYPE CBrowserHost::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid,
@@ -961,6 +1614,7 @@ HRESULT STDMETHODCALLTYPE CBrowserHost::Invoke(DISPID dispIdMember, REFIID riid,
 
 		case DISPID_NEWWINDOW:
 		case DISPID_NEWWINDOW2:
+			if (!mWebBrowser) return S_OK;
 			READYSTATE m_ReadyState;
 			mWebBrowser->get_ReadyState(&m_ReadyState);
 			if(m_ReadyState!=READYSTATE_COMPLETE && m_ReadyState!=READYSTATE_INTERACTIVE && !(options.flags&OPT_POPUPS))

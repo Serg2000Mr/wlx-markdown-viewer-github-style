@@ -342,12 +342,48 @@ CAtlString GetFullKeyName(WORD key)
 	result += GetKeyName(key);
 	return result;
 }
+
+std::wstring Utf8ToWide(const std::string& utf8)
+{
+	if (utf8.empty()) return std::wstring();
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, &utf8[0], (int)utf8.size(), NULL, 0);
+	std::wstring wstrTo(size_needed, 0);
+	MultiByteToWideChar(CP_UTF8, 0, &utf8[0], (int)utf8.size(), &wstrTo[0], size_needed);
+	return wstrTo;
+}
+
+std::string WideToUtf8(const std::wstring& wide)
+{
+    if (wide.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wide[0], (int)wide.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wide[0], (int)wide.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
 HWND GetBrowserHostWnd(HWND child_hwnd)
 {
 	for(HWND hWnd=child_hwnd;hWnd;hWnd=GetParent(hWnd))
 		if(GetProp(hWnd,PROP_BROWSER))
 			return hWnd;
 	return NULL;
+}
+
+void DebugLog(const char* location, const char* message, const char* hypothesisId)
+{
+    std::ofstream logFile("c:\\1С\\ИИ\\MarkDown\\.cursor\\debug.log", std::ios::app);
+    if (logFile.is_open())
+    {
+        logFile << "{\"id\":\"log_" << time(NULL) << "\",\"timestamp\":" << GetTickCount() 
+                << ",\"location\":\"" << location << "\",\"message\":\"" << message 
+                << "\",\"hypothesisId\":\"" << hypothesisId << "\",\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" << std::endl;
+        logFile.close();
+    }
+}
+
+void DebugLogW(const char* location, const wchar_t* message, const char* hypothesisId)
+{
+    DebugLog(location, WideToUtf8(message).c_str(), hypothesisId);
 }
 /*
 CBrowserHost* GetBrowserHost(HWND child_hwnd)

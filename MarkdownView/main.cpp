@@ -33,7 +33,7 @@ HWND ParentWinCopy;
 int ShowFlagsCopy;
 
 // Temporary HTML file path for markdown rendering
-char TempHtmlFilePath[MAX_PATH] = "";
+wchar_t TempHtmlFilePath[MAX_PATH] = L"";
 
 CSmallStringList html_extensions;
 CSmallStringList markdown_extensions;
@@ -63,70 +63,11 @@ LRESULT CALLBACK HookKeybProc(int nCode,WPARAM wParam,LPARAM lParam)
 	return CallNextHookEx(hook_keyb, nCode, wParam, lParam);
 }
 
-// Настраивает Internet Explorer Feature Control для разрешения загрузки интернет-контента
-// в локальных HTML файлах. Вызывается один раз при инициализации плагина.
-void SetupIEFeatureControl()
-{
-	// Получаем имя исполняемого файла (totalcmd.exe или totalcmd64.exe)
-	char exePath[MAX_PATH];
-	char exeName[MAX_PATH];
-	GetModuleFileNameA(NULL, exePath, MAX_PATH);
-	char* fileName = strrchr(exePath, '\\');
-	if (fileName)
-		strcpy(exeName, fileName + 1);
-	else
-		strcpy(exeName, exePath);
-
-	HKEY hKey;
-	DWORD value;
-	DWORD size = sizeof(DWORD);
-	DWORD type = REG_DWORD;
-
-	// FEATURE_LOCALMACHINE_LOCKDOWN = 0 - разрешает загрузку интернет-контента в локальных файлах
-	const char* lockdownPath = "SOFTWARE\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_LOCALMACHINE_LOCKDOWN";
-	if (RegCreateKeyExA(HKEY_CURRENT_USER, lockdownPath, 0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
-	{
-		if (RegQueryValueExA(hKey, exeName, NULL, &type, (LPBYTE)&value, &size) != ERROR_SUCCESS)
-		{
-			// Ключ не существует - создаём со значением 0
-			value = 0;
-			RegSetValueExA(hKey, exeName, 0, REG_DWORD, (LPBYTE)&value, sizeof(DWORD));
-		}
-		RegCloseKey(hKey);
-	}
-
-	// FEATURE_BROWSER_EMULATION = 11001 (0x2AF9) - режим IE11 Edge
-	const char* emulationPath = "SOFTWARE\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_BROWSER_EMULATION";
-	if (RegCreateKeyExA(HKEY_CURRENT_USER, emulationPath, 0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
-	{
-		if (RegQueryValueExA(hKey, exeName, NULL, &type, (LPBYTE)&value, &size) != ERROR_SUCCESS)
-		{
-			// Ключ не существует - создаём со значением 11001 (IE11 Edge mode)
-			value = 0x2AF9;
-			RegSetValueExA(hKey, exeName, 0, REG_DWORD, (LPBYTE)&value, sizeof(DWORD));
-		}
-		RegCloseKey(hKey);
-	}
-}
-
 void InitProc()
 {
 	if(!options.valid)
 		InitOptions();
 	
-	// Настраиваем IE Feature Control для загрузки изображений из интернета
-	// Только если AllowInternetImages=1 в ini файле
-	static bool ieConfigured = false;
-	if (!ieConfigured)
-	{
-		int allowInternetImages = GetPrivateProfileInt("options", "AllowInternetImages", 1, options.IniFileName);
-		if (allowInternetImages)
-		{
-			SetupIEFeatureControl();
-		}
-		ieConfigured = true;
-	}
-
 	if(!hook_keyb&&(options.flags&OPT_KEEPHOOKNOWINDOWS))
 		hook_keyb = SetWindowsHookEx(WH_KEYBOARD, HookKeybProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
 	if(!img_list)
@@ -223,13 +164,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			switch(LOWORD(wParam))
 			{
 			case TBB_BACK:
-				browser_host->mWebBrowser->GoBack();
+				browser_host->GoBack();
 				break;
 			case TBB_FORWARD:
-				browser_host->mWebBrowser->GoForward();
+				browser_host->GoForward();
 				break;
 			case TBB_STOP:
-				browser_host->mWebBrowser->Stop();
+				browser_host->Stop();
 				break;
 			case TBB_REFRESH:
 				RefreshBrowser(); // instead of browser_host->mWebBrowser->Refresh();
@@ -275,24 +216,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	else if(message==WM_IEVIEW_PRINT)
 	{
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd ,PROP_BROWSER);
-		CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = browser_host->mWebBrowser;
-		if ( pCmd ) 
-			pCmd->Exec(NULL, OLECMDID_PRINT, OLECMDEXECOPT_DODEFAULT, NULL,NULL);
+		if (browser_host)
+			browser_host->Print();
 	}
 	else if(message==WM_IEVIEW_COMMAND)
 	{
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd,PROP_BROWSER);
 		if ( browser_host ) 
 		{
-			CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = browser_host->mWebBrowser;
-			if ( pCmd ) 
+			if (browser_host->mIsWebView2Initialized && browser_host->mWebView)
 			{
-				if(wParam==lc_selectall)
-					pCmd->Exec(NULL, OLECMDID_SELECTALL, OLECMDEXECOPT_DODEFAULT, NULL,NULL);
-				else if(wParam==lc_copy)
-					pCmd->Exec(NULL, OLECMDID_COPY, OLECMDEXECOPT_DODEFAULT, NULL,NULL);
-				/*else if(wParam==lc_ieview_paste)
-					pCmd->Exec(NULL, OLECMDID_PASTE, OLECMDEXECOPT_DODEFAULT, NULL,NULL);*/
+				if (wParam == lc_selectall)
+					browser_host->mWebView->ExecuteScript(L"document.execCommand('selectAll');", nullptr);
+				else if (wParam == lc_copy)
+					browser_host->mWebView->ExecuteScript(L"document.execCommand('copy');", nullptr);
+			}
+			else if (browser_host->mWebBrowser)
+			{
+				CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = browser_host->mWebBrowser;
+				if ( pCmd ) 
+				{
+					if(wParam==lc_selectall)
+						pCmd->Exec(NULL, OLECMDID_SELECTALL, OLECMDEXECOPT_DODEFAULT, NULL,NULL);
+					else if(wParam==lc_copy)
+						pCmd->Exec(NULL, OLECMDID_COPY, OLECMDEXECOPT_DODEFAULT, NULL,NULL);
+				}
 			}
 		}
 	}
@@ -400,24 +348,26 @@ void do_events()
 
 void prepare_browser(CBrowserHost* browser_host)
 {
-	browser_host->mWebBrowser->Navigate(L"about:blank", NULL, NULL, NULL, NULL);
+	browser_host->Navigate(L"about:blank");
 
-	// it's really a bad method, but in practice we won't have to wait, so 
-	// perhaps the loop will never get executed
-	READYSTATE rs;
-	do
-	{
-		browser_host->mWebBrowser->get_ReadyState(&rs);
-		do_events();
-	} while (rs != READYSTATE_COMPLETE);
+	// for WebView2 we don't need to wait for about:blank usually, 
+	// but for IE we do. 
+	if (browser_host->mWebBrowser) {
+		READYSTATE rs;
+		do
+		{
+			browser_host->mWebBrowser->get_ReadyState(&rs);
+			do_events();
+		} while (rs != READYSTATE_COMPLETE);
+	}
 }
 
 void CleanupTempHtmlFile()
 {
-	if (TempHtmlFilePath[0] != '\0')
+	if (TempHtmlFilePath[0] != L'\0')
 	{
-		DeleteFileA(TempHtmlFilePath);
-		TempHtmlFilePath[0] = '\0';
+		DeleteFileW(TempHtmlFilePath);
+		TempHtmlFilePath[0] = L'\0';
 	}
 }
 
@@ -429,36 +379,49 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 	strcat(css, "\\");
 	strcat(css, useDarkTheme ? html_template_dark : html_template);
 
-	Markdown md = Markdown();
+    Markdown md = Markdown();
 	std::string html = md.ConvertToHtmlAscii(std::string(filename), std::string(css), std::string(renderer_extensions));
+
+    char lenMsg[64];
+    sprintf(lenMsg, "HTML length: %zu", html.length());
+    DebugLog("main.cpp:browser_show_file", lenMsg, "C");
 
 	// Удаляем предыдущий временный файл
 	CleanupTempHtmlFile();
 
 	// Создаём временный HTML файл в папке с исходным markdown файлом
-	// Это позволяет корректно разрешать относительные пути к локальным изображениям
-	char tempPath[MAX_PATH];
-	strcpy(tempPath, filename);
-	PathRemoveFileSpecA(tempPath);
-	strcat(tempPath, "\\_markdown_preview_temp.html");
-	strcpy(TempHtmlFilePath, tempPath);
+	// Используем Unicode для путей
+    
+    int size_needed = MultiByteToWideChar(CP_ACP, 0, filename, -1, NULL, 0);
+    std::wstring wFile(size_needed, 0);
+    MultiByteToWideChar(CP_ACP, 0, filename, -1, &wFile[0], size_needed);
+    
+	wchar_t tempPath[MAX_PATH];
+	wcscpy(tempPath, wFile.c_str());
+	PathRemoveFileSpecW(tempPath);
+    browserHost->mCurrentFolder = tempPath; // Store folder for WebView2 mapping
+	wcscat(tempPath, L"\\_markdown_preview_temp.html");
+	wcscpy(TempHtmlFilePath, tempPath);
 
-	// Записываем HTML во временный файл
-	std::ofstream outFile(TempHtmlFilePath, std::ios::binary);
-	if (outFile.is_open())
+    DebugLogW("main.cpp:browser_show_file", TempHtmlFilePath, "C");
+
+	// Записываем HTML во временный файл через _wfopen для Unicode пути
+	FILE* f = _wfopen(TempHtmlFilePath, L"wb");
+	if (f)
 	{
-		outFile.write(html.c_str(), html.length());
-		outFile.close();
+		fwrite(html.c_str(), 1, html.length(), f);
+		fclose(f);
+        DebugLog("main.cpp:browser_show_file", "File written", "C");
 
-		// Открываем через Navigate - это позволяет работать MOTW и истории навигации
-		CComBSTR url(TempHtmlFilePath);
-		browserHost->mWebBrowser->Navigate(url, NULL, NULL, NULL, NULL);
+        // Use Navigate to the virtual domain for the file
+        // Changing to https and a different name to avoid potential 3s delay
+        browserHost->Navigate(TempHtmlFilePath);
 	}
 	else
 	{
-		// Fallback: если не удалось создать файл, используем старый метод
-		prepare_browser(browserHost);
-		browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.c_str(), html.length());
+        DebugLog("main.cpp:browser_show_file", "Failed to open temp file for writing", "C");
+		// Fallback
+		browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.c_str(), (int)html.length());
 	}
 }
 
@@ -487,14 +450,14 @@ int __stdcall ListLoadNext(HWND ParentWin, HWND PluginWin, char* FileToLoad, int
 	if (is_markdown(FileToLoad))
 		browser_show_file(browser_host, FileToLoad, ShowFlags & lcp_darkmode);
 	else
-		browser_host->mWebBrowser->Navigate(url, NULL, NULL, NULL, NULL);
+		browser_host->Navigate(url);
 
 	return LISTPLUGIN_OK;
 }
 
 HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 {
-	OleInitialize(NULL);
+	HRESULT hrOle = OleInitialize(NULL);
 	InitProc();
 
 	CComBSTR url = GetUrlFromFilename(FileToLoad);
@@ -531,6 +494,7 @@ HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 	browser_host->mFocusType = qiuck_view?fctQuickView:fctLister;
 	if(!browser_host->CreateBrowser(ListWin))
 	{
+        browser_host->Release();
 		DestroyWindow(ListWin);
 		return NULL;
 	}
@@ -540,9 +504,13 @@ HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 	if(is_markdown(FileToLoad))
 		browser_show_file(browser_host, FileToLoad, ShowFlags & lcp_darkmode);
 	else
-		browser_host->mWebBrowser->Navigate(url, NULL, NULL, NULL, NULL);
+		browser_host->Navigate(url);
 	
 	SetProp(ListWin, PROP_BROWSER, browser_host);
+    
+    char msg[64];
+    sprintf(msg, "Returning ListWin=%p", ListWin);
+    DebugLog("main.cpp:ListLoad", msg, "A,B");
 	
 	if(/*!(options.flags&OPT_KEEPHOOKNOWINDOWS)&&*/hook_keyb==NULL/*&&num_lister_windows==0*/)
 		hook_keyb = SetWindowsHookEx(WH_KEYBOARD, HookKeybProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
@@ -605,6 +573,7 @@ BOOL APIENTRY DllMain( HANDLE hModule, DWORD  reason_for_call, LPVOID lpReserved
 {
 	if(reason_for_call==DLL_PROCESS_ATTACH)
 	{
+        DebugLog("main.cpp:DllMain", "DLL_PROCESS_ATTACH", "B");
 		hinst = (HINSTANCE)hModule;
 		num_lister_windows = 0;
 		WNDCLASS wc = {	0,//CS_HREDRAW | CS_VREDRAW,
@@ -615,6 +584,7 @@ BOOL APIENTRY DllMain( HANDLE hModule, DWORD  reason_for_call, LPVOID lpReserved
 	}
 	else if(reason_for_call==DLL_PROCESS_DETACH)
 	{
+        DebugLog("main.cpp:DllMain", "DLL_PROCESS_DETACH", "B");
 		if(hook_keyb)
 			UnhookWindowsHookEx(hook_keyb);
 		if(img_list)

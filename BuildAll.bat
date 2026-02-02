@@ -12,6 +12,15 @@ echo.
 echo === Build Script for wlx-markdown-viewer (Native AOT) ===
 echo.
 
+:: Close Total Commander if running
+set "TC_WAS_RUNNING="
+tasklist /FI "IMAGENAME eq TOTALCMD64.EXE" 2>nul | find /I "TOTALCMD64.EXE" >nul && set "TC_WAS_RUNNING=1"
+
+echo Closing TOTALCMD64.EXE if running...
+taskkill /IM TOTALCMD64.EXE /F >nul 2>&1
+if %ERRORLEVEL% EQU 0 (echo TOTALCMD64.EXE closed.) else (echo TOTALCMD64.EXE was not running.)
+echo.
+
 :: --- Configuration for Visual Studio 2026 (Internal version 18) ---
 set "VS_PATH=C:\Program Files\Microsoft Visual Studio\18\Community"
 set "MSBUILD=%VS_PATH%\MSBuild\Current\Bin\MSBuild.exe"
@@ -34,7 +43,7 @@ if not exist "%MSBUILD%" (
     )
 
     echo ERROR: MSBuild.exe not found. Please ensure Visual Studio 2026 is installed.
-    pause
+    timeout /t 5
     exit /b 1
 )
 
@@ -52,7 +61,7 @@ if %ERRORLEVEL% EQU 0 (
         goto :found_dotnet
     )
     echo ERROR: dotnet.exe not found. Please install .NET 8 SDK.
-    pause
+    timeout /t 5
     exit /b 1
 )
 
@@ -72,7 +81,7 @@ cd MarkdigNative
 "%DOTNET%" publish -r win-x64 -c Release /p:PublishAot=true /p:AssemblyName=MarkdigNative-x64
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR building MarkdigNative x64
-    pause
+    timeout /t 5
     exit /b %ERRORLEVEL%
 )
 copy /y bin\Release\net8.0\win-x64\publish\MarkdigNative-x64.dll ..\bin\Release\
@@ -92,7 +101,7 @@ echo [x64] Building Markdown bridge...
 "%MSBUILD%" Markdown\Markdown.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="%ROOT_DIR%\\"
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR building Markdown x64
-    pause
+    timeout /t 5
     exit /b %ERRORLEVEL%
 )
 
@@ -105,7 +114,7 @@ echo [x64] Building MarkdownView...
 "%MSBUILD%" MarkdownView\MarkdownView.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="%ROOT_DIR%\\"
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR building MarkdownView x64
-    pause
+    timeout /t 5
     exit /b %ERRORLEVEL%
 )
 
@@ -122,4 +131,11 @@ copy /y Build\MarkdownView.ini bin\Release\ >nul
 xcopy /s /e /y /i Build\css bin\Release\css >nul
 
 echo === Build Successful (x64)! ===
-pause
+
+if defined TC_WAS_RUNNING (
+    echo Reopening Total Commander...
+    start "" "c:\Program Files\totalcmd\TOTALCMD64.EXE"
+    REM If TC is installed in another folder, change the path above.
+)
+
+timeout /t 5

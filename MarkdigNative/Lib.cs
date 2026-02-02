@@ -53,13 +53,9 @@ public static class Lib
             var pipeline = builder.Build();
 
             var sb = new StringBuilder(1000);
-            // Mark of the Web (MOTW) - указывает IE обрабатывать документ в зоне Internet
-            // Это позволяет загружать изображения и другие ресурсы из интернета
-            sb.Append("<!-- saved from url=(0014)about:internet -->\r\n");
             sb.AppendLine("<!DOCTYPE html>");
             sb.AppendLine("<html><head>");
             sb.AppendLine("<meta charset='utf-8'>");
-            sb.AppendLine("<meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">");
 
             sb.Append("<style>");
             if (File.Exists(cssFile))

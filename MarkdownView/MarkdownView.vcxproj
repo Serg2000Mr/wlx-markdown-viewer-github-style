@@ -116,7 +116,7 @@
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shlwapi.lib;winhttp.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName).wlx</OutputFile>
       <ModuleDefinitionFile>htmlview.def</ModuleDefinitionFile>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -142,7 +142,7 @@
       <AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shlwapi.lib;winhttp.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName).wlx</OutputFile>
       <ModuleDefinitionFile>htmlview.def</ModuleDefinitionFile>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -172,7 +172,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shlwapi.lib;winhttp.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName).wlx64</OutputFile>
       <ModuleDefinitionFile>htmlview.def</ModuleDefinitionFile>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -199,7 +199,7 @@
       <OmitFramePointers>true</OmitFramePointers>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>shlwapi.lib;winhttp.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName).wlx64</OutputFile>
       <ModuleDefinitionFile>htmlview.def</ModuleDefinitionFile>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -226,6 +226,9 @@
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="HTMLView.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="toolbar.bmp" />

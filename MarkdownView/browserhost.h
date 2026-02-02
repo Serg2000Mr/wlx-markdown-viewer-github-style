@@ -5,6 +5,11 @@
 #include <atlcom.h>
 #include <mshtml.h>
 #include <vector>
+#include <string>
+#include <WebView2.h>
+#include <wrl.h>
+#include <winhttp.h>
+#include <shlwapi.h>
 
 enum FocusCatchType {fctNoCatch, fctQuickView, fctLister};
 
@@ -31,6 +36,16 @@ public:
 	CComPtr<IHighlightSegment> mCurrentSearchHighlightSegment;
 	bool mImagesHidden;
 	CComPtr<IWebBrowser2> mWebBrowser;
+	CComPtr<ICoreWebView2Controller> mWebViewController;
+	CComPtr<ICoreWebView2> mWebView;
+	CComPtr<ICoreWebView2Environment> mWebViewEnvironment;
+	bool mIsWebView2Initialized;
+	double mZoomFactor;
+	long mScrollTop;
+	std::wstring mPendingHTML;
+	CComBSTR mPendingURL;
+    std::wstring mCurrentFolder;
+    void UpdateFolderMapping(const std::wstring& folder);
 	DWORD mEventsCookie;
 	int mRefCount;
 	int fSearchHighlightMode;
@@ -46,6 +61,15 @@ public:
 	void LoadPosition();
 	void Focus();
 	void Resize();
+	void Navigate(const wchar_t* url);
+	void GoBack();
+	void GoForward();
+	void Stop();
+	void Print();
+	void ZoomIn();
+	void ZoomOut();
+	void ZoomReset();
+	void Search(const wchar_t* text, bool forward, bool matchCase, bool wholeWord);
 	bool FindText(CComBSTR search, long search_flags, bool backward);
 	bool IsSearchHighlightEnabled();
 	void ClearSearchHighlight();

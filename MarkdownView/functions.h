@@ -4,6 +4,9 @@
 #define _CONVERSION_DONT_USE_THREAD_LOCALE
 #include <windows.h>
 #include <atlstr.h>
+#include <string>
+#include <fstream>
+#include <ctime>
 
 #define MAIN_WINDOW_CLASS "IEViewMainWindowClass"
 #define TBB_BACK 0
@@ -72,6 +75,10 @@ void InitOptions();
 void InitProc();
 HWND GetBrowserHostWnd(HWND child_hwnd);
 CAtlString GetFullKeyName(WORD key);
+std::wstring Utf8ToWide(const std::string& utf8);
+std::string WideToUtf8(const std::wstring& wide);
+void DebugLog(const char* location, const char* message, const char* hypothesisId = "None");
+void DebugLogW(const char* location, const wchar_t* message, const char* hypothesisId = "None");
 
 int Log(char* Section,char* Text);
 void LogTime(char* Text);
