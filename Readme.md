@@ -1,25 +1,60 @@
-# Markdown Lister Plugin for Total Commander (32/64-bit version)
+# Markdown Lister Plugin для Total Commander
 
-Based on [wlx-markdown-viewer plugin](https://github.com/rg-software/wlx-markdown-viewer), 
-and upgraded for displays Markdown files via [Markdig Markdown Processor](https://github.com/xoofx/markdig), which support modern markdown syntax.
+Плагин для просмотра Markdown файлов в Total Commander с современными возможностями и внешним видом как на GitHub.
 
-[Markdig Markdown Processor](https://github.com/xoofx/markdig) is dotnet library, so dotnet core 8.0 is required to be installed.
+## ✨ Основные возможности
 
-## Fine Tuning
+- **Внешний вид полностью соответствует отображению на GitHub** - принимается за эталонное
+- **Диаграммы Mermaid.js** - Полная поддержка блок-схем, диаграмм последовательности, ER-диаграмм и других
+- **Изображения** - Отображение встроенных изображений и внешних изображений по URL
+- **Таблицы** - Полная поддержка pipe-таблиц с выравниванием
+- **Эмодзи** - Эмодзи в стиле GitHub через shortcodes (`:emoji_name:`)
+- **Списки задач** - Интерактивные чекбоксы для отслеживания задач
+- **Подсветка кода** - Синтаксическая подсветка для блоков кода
+- **Математические формулы** - Математические выражения в стиле LaTeX
 
-Plugin configuration is specified in `MarkdownView.ini`. Markdown-related settings are:
- 
-- `Extensions: MarkdownExtensions` file extensions recognized by the plugin as markdown files.
+## 🚀 Ключевые преимущества
 
-- `Renderer: Extensions` A collection of extensions for Markdig Markdown Processor. [Read to markdig extensions features block](https://github.com/xoofx/markdig/blob/master/readme.md)  
-  Follow extensions are supported: common, advanced, alerts, pipetables, gfm-pipetables, emphasisextras, listextras, hardlinebreak, footnotes, footers, citations, attributes, gridtables, abbreviations, emojis, definitionlists, customcontainers, figures, mathematics, bootstrap, medialinks, smartypants, autoidentifiers, tasklists, diagrams, nofollowlinks, noopenerlinks, noreferrerlinks, nohtml, yaml, nonascii-noescape, autolinks, globalization
+- **Без внешних зависимостей** - Не требует установки .NET Runtime
+- **Современный движок WebView2** - На базе Chromium вместо устаревшего Internet Explorer
+- **Быстрая и легкая работа** - Оптимизировано для производительности
 
-- `Renderer: CustomCSS` a path to a CSS sheet for customizing the resulting look of the document. A collection of four sheets from [Markdown CSS](https://markdowncss.github.io/) and six Github-inspired sheets courtesy of S.&nbsp;Kuznetsov is included into the package.
+## 📦 Установка
 
-## Internet Explorer Update
+1. Скачайте архив из [Releases](https://github.com/Serg2000Mr/wlx-markdown-viewer/releases)
+2. Откройте архив в Total Commander
+3. Подтвердите установку плагина
 
-The plugin is based on an obsolete Internet Explorer engine, which can be upgraded via [registry hacks](https://github.com/rg-software/wlx-markdown-viewer/raw/master/ie_upgrade_registry.zip) (check [MSDN](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/general-info/ee330730(v=vs.85)?redirectedfrom=MSDN#browser-emulation) for details.)
+## 🧪 Тестирование
+Откройте любой `.md` файл из проекта клавишей F3 в Total Commander
 
-## Setup
+**Комплексный пример:**
+Протестируйте плагин с комплексными примерами markdown из репозитория [GnuriaN/format-README](https://github.com/GnuriaN/format-README):
+1. Скачайте репозиторий как ZIP
+2. Распакуйте архив
+3. Откройте любой `.md` файл из проекта клавишей F3 в Total Commander
+4. Увидите все возможности markdown в действии: таблицы, эмодзи, списки, диаграммы, изображения и т.д.
 
-The binary plugin archive comes with the setup script. Just enter the archive, and confirm installation.
+## ⚙️ Системные требования
+
+- Windows 10/11
+- Total Commander (64-bit)
+- WebView2 Runtime (обычно уже установлен)
+
+## 🔧 Настройка
+
+Конфигурация плагина задается в файле `MarkdownView.ini`:
+
+- `Extensions: MarkdownExtensions` — расширения файлов, распознаваемые плагином как Markdown
+- `Renderer: Extensions` — коллекция расширений для процессора Markdig
+- `Renderer: CustomCSS` — путь к файлу CSS для настройки внешнего вида документа
+
+## 🙏 Благодарности
+
+- **ezyuzin** за [wlx-markdown-viewer-markdig](https://github.com/ezyuzin/wlx-markdown-viewer) - версию с поддержкой Markdig (требует .NET Core 8.0 Runtime)
+- **rg-software** за оригинальный [wlx-markdown-viewer](https://github.com/rg-software/wlx-markdown-viewer) 
+- **xoofx** за мощный процессор [Markdig](https://github.com/xoofx/markdig)
+
+## 📄 Лицензия
+
+Этот проект распространяется под лицензией MIT.
