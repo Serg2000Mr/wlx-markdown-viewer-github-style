@@ -112,6 +112,12 @@ msbuild MarkdownView.sln /p:Configuration=Release /p:Platform=x64
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
+## 👥 Contributors
+
+- **[ezyuzin](https://github.com/ezyuzin)** - Author of Markdig and WebView2 version
+- **[rg-software](https://github.com/rg-software)** - Author of original wlx-markdown-viewer
+- **[Serg2000Mr](https://github.com/Serg2000Mr)** - Current maintainer, Native AOT version
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the original repository for details.

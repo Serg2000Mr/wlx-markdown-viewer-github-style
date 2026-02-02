@@ -114,6 +114,12 @@ msbuild MarkdownView.sln /p:Configuration=Release /p:Platform=x64
 
 Приветствуются вклады в проект! Не стесняйтесь создавать issues и pull requests.
 
+## � Контрибьюторы
+
+- **[ezyuzin](https://github.com/ezyuzin)** - Автор версии с поддержкой Markdig и WebView2
+- **[rg-software](https://github.com/rg-software)** - Автор оригинального wlx-markdown-viewer
+- **[Serg2000Mr](https://github.com/Serg2000Mr)** - Текущий мейнтейнер, Native AOT версия
+
 ## 🙏 Благодарности
 
 - **ezyuzin** за улучшенную версию [wlx-markdown-viewer](https://github.com/ezyuzin/wlx-markdown-viewer) с поддержкой Markdig
