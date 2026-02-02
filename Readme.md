@@ -1,28 +1,67 @@
-# WLX Markdown Viewer
+# Markdown Lister Plugin для Total Commander
 
-HTML + Markdown lister plugin for Total Commander (32/64-bit version)
+Плагин для просмотра Markdown файлов в **Total Commander** с современными возможностями и внешним видом как на GitHub.
 
-Based on [HTMLView 1.2.6 source](http://sites.google.com/site/htmlview/), this plugin supports the original HTMLView functionality and displays Markdown files via [hoedown](https://github.com/hoedown/hoedown). Markdown rendering should work reliably for UTF-8 and UTF-16 encoded files (file format is detected with [text-encoding-detect](https://github.com/AutoItConsulting/text-encoding-detect)). For other encodings, Internet Explorer-based autodetection is used, so results may vary.
+<img width="683" height="897" alt="Image" src="https://github.com/user-attachments/assets/d91d0639-d3cc-46b6-8544-b404cfb34e95" />
 
-## Fine Tuning
+## ✨ Основные возможности
 
-Plugin configuration is specified in `MarkdownView.ini`. Markdown-related settings are:
+- **Внешний вид полностью соответствует отображению на GitHub** - принимается за эталонное
+- **Диаграммы Mermaid.js** - Полная поддержка блок-схем, диаграмм последовательности, ER-диаграмм и других
+- **Изображения** - Отображение встроенных изображений и внешних изображений по URL
+- **Таблицы** - Полная поддержка pipe-таблиц с выравниванием
+- **Эмодзи** - Эмодзи в стиле GitHub через shortcodes (`:emoji_name:`)
+- **Списки задач** - Интерактивные чекбоксы для отслеживания задач
+- **Подсветка кода** - Синтаксическая подсветка для блоков кода
+- **Математические формулы** - Математические выражения в стиле LaTeX
 
-* `MarkdownExtensions`: file extensions recognized by the plugin as markdown files.
-* `HoedownArgs`: custom arguments passed to the hoedown engine (control fine settings of markdown rendering).
-* `UseSmartypants`: controls whether `smartypants` should be invoked after processing.
-* `CustomCSS`: a path to a CSS sheet for customizing the resulting look of the document. A collection of four sheets from [Markdown CSS](https://markdowncss.github.io/) and six Github-inspired sheets courtesy of S.&nbsp;Kuznetsov is included into the package.
+## 🚀 Ключевые преимущества
 
-For more information on `hoedown` arguments and `smartypants` functionality, check [this quick reference](https://htmlpreview.github.io?https://raw.githubusercontent.com/rg-software/wlx-markdown-viewer/master/hoedown.html).
+- **Без внешних зависимостей** - Не требует установки .NET Runtime
+- **Современный движок WebView2** - На базе Chromium вместо устаревшего Internet Explorer
+- **Быстрая и легкая работа** - Оптимизировано для производительности
 
-## Internet Explorer Update
+## 📦 Установка
 
-The plugin is based on an obsolete Internet Explorer engine, which can be upgraded via [registry hacks](https://github.com/rg-software/wlx-markdown-viewer/raw/master/ie_upgrade_registry.zip) (check [MSDN](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/general-info/ee330730(v=vs.85)?redirectedfrom=MSDN#browser-emulation) for details.)
+1. Скачайте архив из [Releases](https://github.com/Serg2000Mr/wlx-markdown-viewer/releases)
+2. Откройте архив в Total Commander
+3. Подтвердите установку плагина
 
-## Setup
+## 🧪 Тестирование
+Откройте любой свой `.md` файл клавишей F3 в Total Commander
 
-The binary plugin archive comes with the setup script. Just enter the archive, and confirm installation.
+**Комплексный пример:**
+Протестируйте плагин с комплексными примерами markdown из репозитория [GnuriaN/format-README](https://github.com/GnuriaN/format-README):
+1. Скачайте репозиторий как ZIP
+2. Распакуйте архив
+3. Откройте любой `.md` файл из проекта клавишей F3 в Total Commander
+4. Увидите все возможности markdown в действии: таблицы, эмодзи, списки, диаграммы, изображения и т.д.
 
-## Development
+## ⚙️ Системные требования
 
-The current project file can be compiled with Visual Studio 2022. However, if Windows XP support is needed, Visual Studio 2019 version 16.7 or earlier [must be used](https://learn.microsoft.com/en-us/cpp/build/configuring-programs-for-windows-xp?view=msvc-170#windows-xp-deployment). In any case, the code is currently compiled with `141_xp` toolset (enable `Windows XP support for C++` option in the optional components of the `Desktop development with C++` workload to install it). Note that `/Zc:threadSafeInit-` compiler switch is needed for Windows XP.
+- Windows 10/11
+- Total Commander (64-bit)
+- WebView2 Runtime (обычно уже установлен)
+
+## 🔧 Настройка
+
+Конфигурация плагина задается в файле `MarkdownView.ini`:
+
+- `Extensions: MarkdownExtensions` — расширения файлов, распознаваемые плагином как Markdown
+- `Renderer: Extensions` — коллекция расширений для процессора Markdig
+- `Renderer: CustomCSS` — путь к файлу CSS для настройки внешнего вида документа
+
+## 🙏 Благодарности
+
+- **ezyuzin** за [wlx-markdown-viewer-markdig](https://github.com/ezyuzin/wlx-markdown-viewer) - версию с поддержкой Markdig (требует .NET Core 8.0 Runtime)
+- **rg-software** за оригинальный [wlx-markdown-viewer](https://github.com/rg-software/wlx-markdown-viewer) 
+- **xoofx** за процессор [Markdig](https://github.com/xoofx/markdig)
+
+## 📄 Лицензия
+
+Этот проект распространяется под лицензией MIT.
+
+
+
+
+
