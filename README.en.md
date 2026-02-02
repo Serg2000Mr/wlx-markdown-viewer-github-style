@@ -2,7 +2,7 @@
 
 A plugin for viewing Markdown files in Total Commander with modern features and GitHub-like appearance.
 
-![Plugin Screenshot](Скриншот.png)
+![Plugin Screenshot](<img width="682" height="918" alt="Image" src="https://github.com/user-attachments/assets/6eaaabb2-b2b2-40c1-bfb2-254bb1e133ad" />)
 
 ## ✨ Key Features
 
