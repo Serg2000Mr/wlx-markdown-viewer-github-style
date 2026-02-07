@@ -19,6 +19,11 @@
 #include <iterator>
 #include <codecvt>
 #include <algorithm>
+#include <unordered_map>
+#include <list>
+#include <mutex>
+#include <thread>
+#include <atomic>
 #include "functions.h"
 
 #include "Markdown/markdown.h"
@@ -43,6 +48,257 @@ CSmallStringList typing_trans_hotkeys;
 char html_template[512];
 char html_template_dark[512];
 char renderer_extensions[2048];
+
+namespace {
+	struct MarkdownHtmlCacheKey
+	{
+		std::wstring filenameLower;
+		std::wstring cssLower;
+		std::wstring extensionsLower;
+		ULONGLONG lastWrite;
+		ULONGLONG fileSize;
+
+		bool operator==(const MarkdownHtmlCacheKey& other) const
+		{
+			return lastWrite == other.lastWrite
+				&& fileSize == other.fileSize
+				&& filenameLower == other.filenameLower
+				&& cssLower == other.cssLower
+				&& extensionsLower == other.extensionsLower;
+		}
+	};
+
+	struct MarkdownHtmlCacheKeyHash
+	{
+		size_t operator()(const MarkdownHtmlCacheKey& k) const
+		{
+			size_t h = 0;
+			auto mix = [&h](size_t v) { h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); };
+			mix(std::hash<std::wstring>{}(k.filenameLower));
+			mix(std::hash<std::wstring>{}(k.cssLower));
+			mix(std::hash<std::wstring>{}(k.extensionsLower));
+			mix((size_t)k.lastWrite);
+			mix((size_t)(k.lastWrite >> 32));
+			mix((size_t)k.fileSize);
+			mix((size_t)(k.fileSize >> 32));
+			return h;
+		}
+	};
+
+	struct MarkdownHtmlCacheEntry
+	{
+		std::string html;
+		std::list<MarkdownHtmlCacheKey>::iterator lruIt;
+	};
+
+	const size_t kMaxMarkdownHtmlCacheEntries = 8;
+	const size_t kMaxMarkdownHtmlCacheEntryBytes = 2 * 1024 * 1024;
+	std::mutex gMarkdownHtmlCacheMutex;
+	std::list<MarkdownHtmlCacheKey> gMarkdownHtmlCacheLru;
+	std::unordered_map<MarkdownHtmlCacheKey, MarkdownHtmlCacheEntry, MarkdownHtmlCacheKeyHash> gMarkdownHtmlCache;
+
+	const UINT WM_MD_RENDER_DONE = WM_APP + 0x531;
+	std::atomic<unsigned long long> gMdRenderToken{ 0 };
+	std::mutex gMdRenderMutex;
+	std::unordered_map<HWND, unsigned long long> gMdRenderCurrentToken;
+	struct MdRenderResult { unsigned long long token; std::string html; };
+	std::unordered_map<HWND, MdRenderResult> gMdRenderResults;
+
+	bool gTranslateEnabled = false;
+	bool gTranslateAuto = false;
+	char gTranslateTargetLang[16]{};
+
+	static std::wstring ToLowerWin(std::wstring s)
+	{
+		if (!s.empty())
+			CharLowerBuffW(&s[0], (DWORD)s.size());
+		return s;
+	}
+
+	static bool TryGetFileInfo(const std::wstring& path, ULONGLONG& size, ULONGLONG& lastWrite)
+	{
+		WIN32_FILE_ATTRIBUTE_DATA fad{};
+		if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
+			return false;
+		ULARGE_INTEGER s{};
+		s.LowPart = fad.nFileSizeLow;
+		s.HighPart = fad.nFileSizeHigh;
+		size = s.QuadPart;
+		ULARGE_INTEGER t{};
+		t.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+		t.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+		lastWrite = t.QuadPart;
+		return true;
+	}
+
+	static bool TryGetCachedHtml(const MarkdownHtmlCacheKey& key, std::string& outHtml)
+	{
+		std::lock_guard<std::mutex> lock(gMarkdownHtmlCacheMutex);
+		auto it = gMarkdownHtmlCache.find(key);
+		if (it == gMarkdownHtmlCache.end())
+			return false;
+		gMarkdownHtmlCacheLru.erase(it->second.lruIt);
+		gMarkdownHtmlCacheLru.push_front(key);
+		it->second.lruIt = gMarkdownHtmlCacheLru.begin();
+		outHtml = it->second.html;
+		return true;
+	}
+
+	static void PutCachedHtml(const MarkdownHtmlCacheKey& key, std::string html)
+	{
+		if (html.size() > kMaxMarkdownHtmlCacheEntryBytes)
+			return;
+
+		std::lock_guard<std::mutex> lock(gMarkdownHtmlCacheMutex);
+		auto it = gMarkdownHtmlCache.find(key);
+		if (it != gMarkdownHtmlCache.end()) {
+			it->second.html = std::move(html);
+			gMarkdownHtmlCacheLru.erase(it->second.lruIt);
+			gMarkdownHtmlCacheLru.push_front(key);
+			it->second.lruIt = gMarkdownHtmlCacheLru.begin();
+			return;
+		}
+
+		gMarkdownHtmlCacheLru.push_front(key);
+		MarkdownHtmlCacheEntry entry{ std::move(html), gMarkdownHtmlCacheLru.begin() };
+		gMarkdownHtmlCache.emplace(key, std::move(entry));
+
+		while (gMarkdownHtmlCache.size() > kMaxMarkdownHtmlCacheEntries) {
+			auto lastIt = gMarkdownHtmlCacheLru.end();
+			--lastIt;
+			gMarkdownHtmlCache.erase(*lastIt);
+			gMarkdownHtmlCacheLru.pop_back();
+		}
+	}
+
+	static void EnsureBaseTag(std::string& html)
+	{
+		const char* baseTag = "<base href='https://markdown.internal/'>";
+		if (html.find(baseTag) != std::string::npos)
+			return;
+		size_t headPos = html.find("<head");
+		if (headPos == std::string::npos)
+			return;
+		size_t gt = html.find('>', headPos);
+		if (gt == std::string::npos)
+			return;
+		html.insert(gt + 1, baseTag);
+	}
+
+	static bool FindTagInsertPosCi(const std::string& html, const char* tagName, size_t& insertPos)
+	{
+		std::string lower;
+		lower.resize(html.size());
+		std::transform(html.begin(), html.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+		std::string needle = "<";
+		needle += tagName;
+		size_t p = lower.find(needle);
+		if (p == std::string::npos)
+			return false;
+		size_t gt = lower.find('>', p);
+		if (gt == std::string::npos)
+			return false;
+		insertPos = gt + 1;
+		return true;
+	}
+
+	static void InjectGoogleTranslateWidget(std::string& html)
+	{
+		if (!gTranslateEnabled)
+			return;
+		if (html.find("id='__mdv_translate'") != std::string::npos)
+			return;
+
+		size_t headPos = 0;
+		if (!FindTagInsertPosCi(html, "head", headPos))
+			return;
+
+		std::string target = gTranslateTargetLang[0] ? std::string(gTranslateTargetLang) : std::string("ru");
+		
+		// Бронебойный CSS: фиксируем body и скрываем все, что похоже на Google Translate
+		std::string headInject = "<style>"
+			"html,body{top:0!important;margin-top:0!important;position:relative!important;}"
+			".goog-te-banner-frame,iframe[class*='goog-te'],#goog-gt-tt,#goog-gt-vt,.goog-te-balloon-frame{display:none!important;visibility:hidden!important;}"
+			".skiptranslate{display:none!important;}"
+			"#__mdv_gt{display:none!important;}"
+			"</style>";
+
+		// Скрипт инициализации с уведомлением C++ о состоянии
+		headInject += "<script>"
+			"window.__mdv_gt_notify=function(state,text){"
+			" if(window.chrome && window.chrome.webview){"
+			"  window.chrome.webview.postMessage({type:'gt_state',state:state,text:text});"
+			" }"
+			"};"
+			"window.__mdv_gt_load=function(f){"
+			" if(window.__mdv_gt_state==='done' && !f){"
+			"  try{sessionStorage.setItem('__mdv_no_auto','1');}catch(e){}"
+			"  window.location.reload(); return;"
+			" }"
+			" if(window.__mdv_gt_state==='busy') return;"
+			" window.__mdv_gt_state='busy';"
+			" window.__mdv_gt_notify('busy','Перевожу...');"
+			" if(window.__mdv_gt_loaded){ window.__mdv_gt_init(); return; }"
+			" window.__mdv_gt_loaded=true;"
+			" var s=document.createElement('script');"
+			" s.src='https://translate.google.com/translate_a/element.js?cb=__mdv_gt_init';"
+			" document.head.appendChild(s);"
+			"};"
+			"window.__mdv_gt_init=function(){"
+			" try{"
+			"  if(!window.__mdv_gt_el) window.__mdv_gt_el = new google.translate.TranslateElement({pageLanguage:'auto',autoDisplay:false},'__mdv_gt');"
+			" }catch(e){}"
+			" var target='" + target + "';"
+			" var check=function(){"
+			"  var s=document.querySelector('select.goog-te-combo');"
+			"  if(s && s.options && s.options.length>0){"
+			"   s.value=target; s.dispatchEvent(new Event('change',{bubbles:true}));"
+			"   finish();"
+			"  } else { setTimeout(check, 200); }"
+			" };"
+			" var finish=function(){"
+			"  var tries=0;"
+			"  var waitTranslate=function(){"
+			"   var isTrans=document.documentElement.classList.contains('translated-ltr') || document.documentElement.classList.contains('translated-rtl');"
+			"   var fontElem=document.querySelector('font');"
+			"   if(isTrans && fontElem && fontElem.parentElement && fontElem.parentElement.nodeName!=='FONT'){"
+			"    window.__mdv_gt_state='done';"
+			"    window.__mdv_gt_notify('done','Вернуть');"
+			"   } else if(++tries < 100) { setTimeout(waitTranslate, 250); }"
+			"   else {"
+			"    window.__mdv_gt_state='done';"
+			"    window.__mdv_gt_notify('done','Вернуть');"
+			"   }"
+			"  };"
+			"  setTimeout(waitTranslate, 800);"
+			" };"
+			" check();"
+			"};"
+			"document.addEventListener('DOMContentLoaded',function(){"
+			" var auto=" + (gTranslateAuto ? "1" : "0") + ";"
+			" var noAuto=null; try{noAuto=sessionStorage.getItem('__mdv_no_auto'); sessionStorage.removeItem('__mdv_no_auto');}catch(e){}"
+			" if(auto && !noAuto) window.__mdv_gt_load(true);"
+			"});"
+			"</script>";
+
+		html.insert(headPos, headInject);
+
+		size_t bodyPos = 0;
+		if (!FindTagInsertPosCi(html, "body", bodyPos))
+			return;
+		std::string bodyInject = "<div id='__mdv_gt' style='display:none'></div>";
+		html.insert(bodyPos, bodyInject);
+	}
+
+	static std::string BuildLoadingHtml()
+	{
+		return "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+			"<style>body{font-family:Segoe UI,Arial,sans-serif;margin:16px;color:#444}"
+			".t{font-size:12px;opacity:.8}</style></head>"
+			"<body><div class='t'>Rendering...</div></body></html>";
+	}
+}
 
 void RefreshBrowser();
 
@@ -101,6 +357,10 @@ void InitProc()
 	GetPrivateProfileString("Renderer", "Extensions", "", &renderer_extensions[0], 2048, options.IniFileName);
 	GetPrivateProfileString("Renderer", "CustomCSS", "", &html_template[0], 512, options.IniFileName);
 	GetPrivateProfileString("Renderer", "CustomCSSDark", "", &html_template_dark[0], 512, options.IniFileName);
+
+	gTranslateEnabled = GetPrivateProfileInt("Translate", "Enabled", 0, options.IniFileName) != 0;
+	gTranslateAuto = GetPrivateProfileInt("Translate", "Auto", 0, options.IniFileName) != 0;
+	GetPrivateProfileString("Translate", "Target", "ru", gTranslateTargetLang, (DWORD)sizeof(gTranslateTargetLang), options.IniFileName);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -113,6 +373,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		HWND status = (HWND)GetProp(hWnd, PROP_STATUS);
 		HWND toolbar = (HWND)GetProp(hWnd, PROP_TOOLBAR);
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd,PROP_BROWSER);
+		{
+			std::lock_guard<std::mutex> lock(gMdRenderMutex);
+			gMdRenderCurrentToken.erase(hWnd);
+			gMdRenderResults.erase(hWnd);
+		}
 		RemoveProp(hWnd, PROP_BROWSER);
 		RemoveProp(hWnd, PROP_STATUS);
 		RemoveProp(hWnd, PROP_TOOLBAR);
@@ -149,6 +414,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			MoveWindow(toolbar, 0, 0, LOWORD(lParam), toolbar_rc.bottom-toolbar_rc.top, TRUE);
 			InvalidateRect(toolbar,NULL,TRUE);
 		}
+	}
+	else if (message == WM_MD_RENDER_DONE)
+	{
+		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd, PROP_BROWSER);
+		if (browser_host)
+		{
+			std::string html;
+			{
+				std::lock_guard<std::mutex> lock(gMdRenderMutex);
+				auto tokIt = gMdRenderCurrentToken.find(hWnd);
+				auto resIt = gMdRenderResults.find(hWnd);
+				if (tokIt != gMdRenderCurrentToken.end() && resIt != gMdRenderResults.end() && tokIt->second == resIt->second.token)
+				{
+					html = std::move(resIt->second.html);
+					gMdRenderResults.erase(resIt);
+				}
+			}
+			if (!html.empty())
+				browser_host->LoadWebBrowserFromStreamWrapper((const BYTE*)html.data(), (int)html.size());
+		}
+		return 0;
 	}
 	else if(message==WM_SETFOCUS)
 	{
@@ -189,6 +475,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					SetFocus(hWnd);
 				SendMessage(hWnd, WM_KEYDOWN, VK_F3, 0);
 				//SendMessage(hWnd, WM_IEVIEW_SEARCH, 0, 0);
+				break;
+			case TBB_TRANSLATE:
+				browser_host->ExecuteScript(L"window.__mdv_gt_load();");
 				break;
 			}
 		}
@@ -274,7 +563,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 HWND Create_Toolbar(HWND ListWin)
 {
-	TBBUTTON tb_buttons[10] = 
+	TBBUTTON tb_buttons[13] = 
 	{
 		{0, TBB_BACK,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
 		{1, TBB_FORWARD,	TBSTATE_ENABLED, BTNS_BUTTON, NULL},
@@ -286,7 +575,9 @@ HWND Create_Toolbar(HWND ListWin)
 		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
 		{4, TBB_PRINT,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
 		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
-		{7, TBB_SEARCH,		TBSTATE_ENABLED, BTNS_BUTTON, NULL}
+		{7, TBB_SEARCH,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
+		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
+		{I_IMAGENONE, TBB_TRANSLATE, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT, NULL}
 	};
 
 	char parent_class_name[64];
@@ -294,10 +585,15 @@ HWND Create_Toolbar(HWND ListWin)
 	if(strncmp(parent_class_name, "TFormViewUV", 11)==0)
 		tb_buttons[5].fsState = tb_buttons[6].fsState = tb_buttons[9].fsState = TBSTATE_HIDDEN;
 
-	HWND toolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD|CCS_TOP, 0, 0, 0, 0, ListWin, NULL, hinst, NULL); 
+	HWND toolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD|CCS_TOP|TBSTYLE_LIST|TBSTYLE_FLAT|TBSTYLE_TOOLTIPS, 0, 0, 0, 0, ListWin, NULL, hinst, NULL); 
 	SendMessage(toolbar, TB_BUTTONSTRUCTSIZE, (WPARAM) sizeof(TBBUTTON), 0); 
 	SendMessage(toolbar, TB_SETIMAGELIST, 0, (LPARAM)img_list);
-	SendMessage(toolbar, TB_ADDBUTTONS, 10, (LPARAM)&tb_buttons);
+	
+	// Add string for the translate button
+	LRESULT string_index = SendMessage(toolbar, TB_ADDSTRING, 0, (LPARAM)L"Перевести\0");
+	tb_buttons[12].iString = string_index;
+
+	SendMessage(toolbar, TB_ADDBUTTONS, 13, (LPARAM)&tb_buttons);
 	SendMessage(toolbar, TB_AUTOSIZE, 0, 0);
 
 	ShowWindow(toolbar, SW_SHOW);
@@ -373,18 +669,15 @@ void CleanupTempHtmlFile()
 
 void browser_show_file(CBrowserHost* browserHost, const char* filename, bool useDarkTheme)
 {
+	gTranslateEnabled = GetPrivateProfileInt("Translate", "Enabled", 0, options.IniFileName) != 0;
+	gTranslateAuto = GetPrivateProfileInt("Translate", "Auto", 0, options.IniFileName) != 0;
+	GetPrivateProfileString("Translate", "Target", "ru", gTranslateTargetLang, (DWORD)sizeof(gTranslateTargetLang), options.IniFileName);
+
 	CHAR css[MAX_PATH];
 	GetModuleFileName(hinst, css, MAX_PATH);
 	PathRemoveFileSpec(css);
 	strcat(css, "\\");
 	strcat(css, useDarkTheme ? html_template_dark : html_template);
-
-    Markdown md = Markdown();
-	std::string html = md.ConvertToHtmlAscii(std::string(filename), std::string(css), std::string(renderer_extensions));
-
-    char lenMsg[64];
-    sprintf(lenMsg, "HTML length: %zu", html.length());
-    DebugLog("main.cpp:browser_show_file", lenMsg, "C");
 
 	CleanupTempHtmlFile();
 
@@ -400,16 +693,92 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 	if (browserHost->mIsWebView2Initialized && browserHost->mWebView) {
 		CComQIPtr<ICoreWebView2_3> webView3 = browserHost->mWebView;
 		if (webView3) {
-			const char* baseTag = "<base href='https://markdown.internal/'>";
-			size_t headPos = html.find("<head>");
-			if (headPos != std::string::npos) {
-				headPos += 6;
-				html.insert(headPos, baseTag);
+			ULONGLONG fileSize = 0;
+			ULONGLONG lastWrite = 0;
+
+			bool hasInfo = TryGetFileInfo(wFile, fileSize, lastWrite);
+
+			int cssWLen = MultiByteToWideChar(CP_ACP, 0, css, -1, NULL, 0);
+			std::wstring wCss(cssWLen, 0);
+			MultiByteToWideChar(CP_ACP, 0, css, -1, &wCss[0], cssWLen);
+
+			int extWLen = MultiByteToWideChar(CP_ACP, 0, renderer_extensions, -1, NULL, 0);
+			std::wstring wExt(extWLen, 0);
+			MultiByteToWideChar(CP_ACP, 0, renderer_extensions, -1, &wExt[0], extWLen);
+			if (gTranslateEnabled) {
+				std::string trKey = std::string("|gt:") + (gTranslateTargetLang[0] ? gTranslateTargetLang : "ru") + (gTranslateAuto ? "|1" : "|0");
+				int trLen = MultiByteToWideChar(CP_ACP, 0, trKey.c_str(), (int)trKey.size(), NULL, 0);
+				std::wstring wTr(trLen, 0);
+				MultiByteToWideChar(CP_ACP, 0, trKey.c_str(), (int)trKey.size(), &wTr[0], trLen);
+				wExt.append(ToLowerWin(std::move(wTr)));
 			}
-			browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.c_str(), (int)html.length());
+
+			MarkdownHtmlCacheKey key{
+				ToLowerWin(std::wstring(wFile)),
+				ToLowerWin(std::move(wCss)),
+				ToLowerWin(std::move(wExt)),
+				lastWrite,
+				fileSize
+			};
+
+			std::string cachedHtml;
+			if (hasInfo && TryGetCachedHtml(key, cachedHtml)) {
+				char lenMsg[64];
+				sprintf(lenMsg, "HTML length: %zu", cachedHtml.length());
+				DebugLog("main.cpp:browser_show_file", lenMsg, "C");
+
+				browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)cachedHtml.data(), (int)cachedHtml.length());
+				return;
+			}
+
+			std::string loading = BuildLoadingHtml();
+			browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)loading.data(), (int)loading.length());
+
+			HWND targetWnd = browserHost->mParentWin;
+			unsigned long long token = ++gMdRenderToken;
+			{
+				std::lock_guard<std::mutex> lock(gMdRenderMutex);
+				gMdRenderCurrentToken[targetWnd] = token;
+				gMdRenderResults.erase(targetWnd);
+			}
+
+			std::string fileStr(filename);
+			std::string cssStr(css);
+			std::string extStr(renderer_extensions);
+
+			std::thread([targetWnd, token, fileStr = std::move(fileStr), cssStr = std::move(cssStr), extStr = std::move(extStr), key = std::move(key), hasInfo]() mutable {
+				Markdown md = Markdown();
+				std::string html = md.ConvertToHtmlAscii(fileStr, cssStr, extStr);
+				EnsureBaseTag(html);
+				InjectGoogleTranslateWidget(html);
+				if (hasInfo)
+					PutCachedHtml(key, html);
+
+				bool shouldPost = false;
+				{
+					std::lock_guard<std::mutex> lock(gMdRenderMutex);
+					auto it = gMdRenderCurrentToken.find(targetWnd);
+					if (it != gMdRenderCurrentToken.end() && it->second == token) {
+						gMdRenderResults[targetWnd] = MdRenderResult{ token, std::move(html) };
+						shouldPost = true;
+					}
+				}
+				if (shouldPost)
+					PostMessage(targetWnd, WM_MD_RENDER_DONE, 0, 0);
+			}).detach();
+
 			return;
 		}
 	}
+
+	Markdown md = Markdown();
+	std::string html = md.ConvertToHtmlAscii(std::string(filename), std::string(css), std::string(renderer_extensions));
+	EnsureBaseTag(html);
+	InjectGoogleTranslateWidget(html);
+
+    char lenMsg[64];
+    sprintf(lenMsg, "HTML length: %zu", html.length());
+    DebugLog("main.cpp:browser_show_file", lenMsg, "C");
 
 	wchar_t tempPath[MAX_PATH];
 	wcscpy(tempPath, folderPath);

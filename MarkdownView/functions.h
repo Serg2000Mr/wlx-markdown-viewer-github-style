@@ -17,6 +17,7 @@
 #define TBB_COPY 5
 #define TBB_PASTE 6
 #define TBB_SEARCH 7
+#define TBB_TRANSLATE 8
 #define PROP_BROWSER "HTMLView_Host"
 #define PROP_STATUS "HTMLView_StatusBar"
 #define PROP_TOOLBAR "HTMLView_Toolbar"

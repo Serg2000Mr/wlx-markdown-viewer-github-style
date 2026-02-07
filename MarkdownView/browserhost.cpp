@@ -161,6 +161,36 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 					else if (message && wcsstr(message, L"\"type\":\"log\"")) {
 						DebugLogW("browserhost.cpp:OnWebMessage", (L"Browser Log: " + std::wstring(message)).c_str(), "A");
 					}
+					else if (message && wcsstr(message, L"\"type\":\"gt_state\"")) {
+						// Update native toolbar button
+						HWND toolbar = (HWND)GetProp(mParentWin, PROP_TOOLBAR);
+						if (toolbar) {
+							wchar_t* textPos = wcsstr(message, L"\"text\":\"");
+							if (textPos) {
+								std::wstring text;
+								textPos += 8;
+								while (*textPos && *textPos != L'\"') {
+									text += *textPos++;
+								}
+								TBBUTTONINFO tbbi = { 0 };
+								tbbi.cbSize = sizeof(TBBUTTONINFO);
+								tbbi.dwMask = TBIF_TEXT;
+								std::string aText = WideToUtf8(text); // Using existing helper if available, or just convert
+								tbbi.pszText = (LPSTR)aText.c_str();
+								SendMessage(toolbar, TB_SETBUTTONINFO, TBB_TRANSLATE, (LPARAM)&tbbi);
+								
+								// Also update enabled state
+								wchar_t* statePos = wcsstr(message, L"\"state\":\"");
+								if (statePos) {
+									statePos += 9;
+									bool isBusy = (wcsncmp(statePos, L"busy", 4) == 0);
+									SendMessage(toolbar, TB_ENABLEBUTTON, TBB_TRANSLATE, MAKELPARAM(!isBusy, 0));
+								}
+								
+								SendMessage(toolbar, TB_AUTOSIZE, 0, 0);
+							}
+						}
+					}
 					CoTaskMemFree(message);
 					return S_OK;
 				}).Get(),
@@ -200,11 +230,14 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 						(wUri.find(L"about:blank") == 0) ||
 						(wUri.find(L"file:") == 0);
 
+					BOOL isUserInitiated = FALSE;
+					args->get_IsUserInitiated(&isUserInitiated);
+
 					char logMsg[512];
-					sprintf(logMsg, "URI: %s, isInternal: %d", WideToUtf8(wUri).c_str(), isInternal);
+					sprintf(logMsg, "URI: %s, isInternal: %d, user: %d", WideToUtf8(wUri).c_str(), isInternal, isUserInitiated);
 					DebugLog("browserhost.cpp:OnNavStarting", logMsg, "A");
 
-					if (!isInternal) {
+					if (!isInternal && isUserInitiated) {
 						args->put_Cancel(TRUE);
 						ShellExecuteW(NULL, L"open", wUri.c_str(), NULL, NULL, SW_SHOWNORMAL);
 						DebugLog("browserhost.cpp:OnNavStarting", "Navigation cancelled and sent to ShellExecute", "A");
@@ -690,6 +723,14 @@ void CBrowserHost::SetStatusText(const wchar_t* str, DWORD delay)
 	HWND status_wnd = (HWND)GetProp(mParentWin, PROP_STATUS);
 	SetWindowTextW(status_wnd, str);
 	fStatusBarUnlockTime = delay ? GetTickCount()+delay : 0;
+}
+
+void CBrowserHost::ExecuteScript(const wchar_t* script)
+{
+	if (mWebView)
+	{
+		mWebView->ExecuteScript(script, nullptr);
+	}
 }
 
 bool CBrowserHost::IsSearchHighlightEnabled()

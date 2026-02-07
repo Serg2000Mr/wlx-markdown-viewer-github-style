@@ -83,6 +83,7 @@ public:
 	void UpdateTitle();
 	bool FormFocused();
 	void SetStatusText(const wchar_t* str, DWORD delay=0);
+	void ExecuteScript(const wchar_t* script);
 public:  
 	// IUnknown
 	STDMETHODIMP QueryInterface(REFIID iid, void ** ppvObject);

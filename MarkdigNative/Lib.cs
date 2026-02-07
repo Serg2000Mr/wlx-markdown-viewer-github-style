@@ -128,7 +128,7 @@ public static class Lib
         return sr.ReadToEnd();
     }
 
-    private static string GetCssContent(string cssFile)
+    private static string GetCssContent(string? cssFile)
     {
         if (string.IsNullOrWhiteSpace(cssFile) || !File.Exists(cssFile))
             return "";
@@ -142,7 +142,7 @@ public static class Lib
         return content;
     }
 
-    private static MarkdownPipeline GetPipeline(string extensions)
+    private static MarkdownPipeline GetPipeline(string? extensions)
     {
         string key = (extensions ?? "").Trim();
         return PipelineCache.GetOrAdd(key, static exts =>
