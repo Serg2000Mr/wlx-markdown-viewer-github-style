@@ -98,7 +98,7 @@ echo === Building Markdown (C++ Bridge) ===
 :: Build x64
 echo [x64] Building Markdown bridge...
 :: MSBuild trick: pass path with double backslash at the end to prevent quote escaping
-"%MSBUILD%" Markdown\Markdown.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="%ROOT_DIR%\\"
+"%MSBUILD%" Markdown\Markdown.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="%ROOT_DIR%\\"
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR building Markdown x64
     timeout /t 5
@@ -111,7 +111,7 @@ echo === Building MarkdownView (Lister Plugin) ===
 
 :: Build x64
 echo [x64] Building MarkdownView...
-"%MSBUILD%" MarkdownView\MarkdownView.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="%ROOT_DIR%\\"
+"%MSBUILD%" MarkdownView\MarkdownView.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="%ROOT_DIR%\\"
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR building MarkdownView x64
     timeout /t 5
@@ -163,4 +163,4 @@ if defined TC_WAS_RUNNING (
     REM If TC is installed in another folder, change the path above.
 )
 
-timeout /t 5
+timeout /t 2

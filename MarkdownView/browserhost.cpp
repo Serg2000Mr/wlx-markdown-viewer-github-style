@@ -16,6 +16,14 @@ using namespace Microsoft::WRL;
 // Статический shared environment для переиспользования
 CComPtr<ICoreWebView2Environment> CBrowserHost::sSharedEnvironment;
 
+static bool IsTempPreviewFilePath(const std::wstring& path)
+{
+	const wchar_t* filename = PathFindFileNameW(path.c_str());
+	if (!filename || !filename[0])
+		return false;
+	return _wcsicmp(filename, L"_markdown_preview_temp.html") == 0;
+}
+
 CBrowserHost::CBrowserHost() :
 	mImagesHidden(false),
 	mEventsCookie(0),
@@ -25,7 +33,8 @@ CBrowserHost::CBrowserHost() :
 	mIsWebView2Initialized(false),
 	mIsShuttingDown(false),
 	mZoomFactor(1.0),
-	mScrollTop(0)
+	mScrollTop(0),
+	mFolderMappingEnabled(false)
 {
 	mLastSearchString.Empty();
 	mLastSearchFlags = 0;
@@ -113,82 +122,66 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 		mWebViewController = controller;
 		HRESULT hr_wv = mWebViewController->get_CoreWebView2(&mWebView);
 		if (FAILED(hr_wv) || !mWebView) {
-			DebugLog("browserhost.cpp:CreateBrowser", "Failed to get WebView", "B");
 			Release();
 			return hr_wv;
 		}
-		DebugLog("browserhost.cpp:CreateBrowser", "Controller/WebView ptrs acquired", "B");
 
 		// Register events
 		mWebView->add_DocumentTitleChanged(
 			Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
 				[this](ICoreWebView2* sender, IUnknown* args) -> HRESULT {
-					DebugLog("browserhost.cpp:OnTitleChanged", "Entry", "B");
 					UpdateTitle();
 					return S_OK;
 				}).Get(),
 			nullptr);
 
 		mWebView->AddScriptToExecuteOnDocumentCreated(
-			L"window.addEventListener('scroll', () => { window.chrome.webview.postMessage({type: 'scroll', top: window.pageYOffset}); });"
-			L"console.log = (m) => { window.chrome.webview.postMessage({type: 'log', message: m}); };"
-			L"console.error = (m) => { window.chrome.webview.postMessage({type: 'error', message: m}); };"
-			L"window.onerror = (m, s, l, c, e) => { window.chrome.webview.postMessage({type: 'error', message: m + ' at ' + s + ':' + l}); };",
+			L"window.addEventListener('scroll', () => { window.chrome.webview.postMessage({type: 'scroll', top: window.pageYOffset}); });",
 			nullptr);
 
 		mWebView->add_WebMessageReceived(
 			Callback<ICoreWebView2WebMessageReceivedEventHandler>(
 				[this](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
-					LPWSTR message;
+					auto UpdateToolbarButtonText = [this](int buttonId, const std::wstring& text) {
+						HWND toolbar = (HWND)GetProp(mParentWin, PROP_TOOLBAR);
+						if (!toolbar)
+							return;
+
+						TBBUTTONINFOW tbbi = { 0 };
+						tbbi.cbSize = sizeof(TBBUTTONINFOW);
+						tbbi.dwMask = TBIF_TEXT;
+						tbbi.pszText = (LPWSTR)text.c_str();
+						SendMessageW(toolbar, TB_SETBUTTONINFOW, buttonId, (LPARAM)&tbbi);
+						SendMessage(toolbar, TB_AUTOSIZE, 0, 0);
+					};
+
+					LPWSTR strMessage = nullptr;
+					if (SUCCEEDED(args->TryGetWebMessageAsString(&strMessage)) && strMessage)
+					{
+						std::wstring s(strMessage);
+						CoTaskMemFree(strMessage);
+
+						return S_OK;
+					}
+
+					LPWSTR message = nullptr;
 					args->get_WebMessageAsJson(&message);
-					// Simple JSON parsing (manually or just check for "top")
 					if (message && wcsstr(message, L"\"top\":")) {
 						wchar_t* pos = wcsstr(message, L"\"top\":");
 						if (pos) {
 							long newScroll = _wtoi(pos + 6);
-							if (abs(newScroll - mScrollTop) > 10) { // Only log significant changes
-								mScrollTop = newScroll;
-								DebugLog("browserhost.cpp:OnWebMessage", "Significant scroll change", "B");
-							}
-							else {
-								mScrollTop = newScroll;
-							}
+							mScrollTop = newScroll;
 						}
 					}
-					else if (message && wcsstr(message, L"\"type\":\"error\"")) {
-						DebugLogW("browserhost.cpp:OnWebMessage", (L"Browser Error: " + std::wstring(message)).c_str(), "A");
-					}
-					else if (message && wcsstr(message, L"\"type\":\"log\"")) {
-						DebugLogW("browserhost.cpp:OnWebMessage", (L"Browser Log: " + std::wstring(message)).c_str(), "A");
-					}
 					else if (message && wcsstr(message, L"\"type\":\"gt_state\"")) {
-						// Update native toolbar button
-						HWND toolbar = (HWND)GetProp(mParentWin, PROP_TOOLBAR);
-						if (toolbar) {
-							wchar_t* textPos = wcsstr(message, L"\"text\":\"");
-							if (textPos) {
-								std::wstring text;
-								textPos += 8;
-								while (*textPos && *textPos != L'\"') {
-									text += *textPos++;
-								}
-								TBBUTTONINFO tbbi = { 0 };
-								tbbi.cbSize = sizeof(TBBUTTONINFO);
-								tbbi.dwMask = TBIF_TEXT;
-								std::string aText = WideToUtf8(text); // Using existing helper if available, or just convert
-								tbbi.pszText = (LPSTR)aText.c_str();
-								SendMessage(toolbar, TB_SETBUTTONINFO, TBB_TRANSLATE, (LPARAM)&tbbi);
-								
-								// Also update enabled state
-								wchar_t* statePos = wcsstr(message, L"\"state\":\"");
-								if (statePos) {
-									statePos += 9;
-									bool isBusy = (wcsncmp(statePos, L"busy", 4) == 0);
-									SendMessage(toolbar, TB_ENABLEBUTTON, TBB_TRANSLATE, MAKELPARAM(!isBusy, 0));
-								}
-								
-								SendMessage(toolbar, TB_AUTOSIZE, 0, 0);
+						wchar_t* textPos = wcsstr(message, L"\"text\":\"");
+						if (textPos) {
+							std::wstring text;
+							textPos += 8;
+							while (*textPos && *textPos != L'\"') {
+								text += *textPos++;
 							}
+							UpdateToolbarButtonText(TBB_TRANSLATE, text);
 						}
 					}
 					CoTaskMemFree(message);
@@ -199,14 +192,10 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 		mWebView->add_NavigationCompleted(
 			Callback<ICoreWebView2NavigationCompletedEventHandler>(
 				[this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
-					DebugLog("browserhost.cpp:OnNavCompleted", "Entry", "B");
 					BOOL isSuccess;
 					args->get_IsSuccess(&isSuccess);
 					COREWEBVIEW2_WEB_ERROR_STATUS status;
 					args->get_WebErrorStatus(&status);
-					char msg[128];
-					sprintf(msg, "Nav completed: success=%d, status=%d", isSuccess, status);
-					DebugLog("browserhost.cpp:OnNavCompleted", msg, "A");
 					if (options.flags & OPT_SAVEPOS)
 						LoadPosition();
 					return S_OK;
@@ -222,7 +211,6 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 					LPWSTR uri;
 					args->get_Uri(&uri);
 					std::wstring wUri = uri;
-					DebugLogW("browserhost.cpp:OnNavStarting", wUri.c_str(), "A");
 
 					// If it's not our internal page or internal resource, open in default browser
 					bool isInternal = (wUri.find(L"markdown.internal") != std::wstring::npos) ||
@@ -233,14 +221,9 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 					BOOL isUserInitiated = FALSE;
 					args->get_IsUserInitiated(&isUserInitiated);
 
-					char logMsg[512];
-					sprintf(logMsg, "URI: %s, isInternal: %d, user: %d", WideToUtf8(wUri).c_str(), isInternal, isUserInitiated);
-					DebugLog("browserhost.cpp:OnNavStarting", logMsg, "A");
-
 					if (!isInternal && isUserInitiated) {
 						args->put_Cancel(TRUE);
 						ShellExecuteW(NULL, L"open", wUri.c_str(), NULL, NULL, SW_SHOWNORMAL);
-						DebugLog("browserhost.cpp:OnNavStarting", "Navigation cancelled and sent to ShellExecute", "A");
 					}
 
 					CoTaskMemFree(uri);
@@ -252,7 +235,6 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 		CComPtr<ICoreWebView2Settings> settings;
 		mWebView->get_Settings(&settings);
 		if (settings) {
-			DebugLog("browserhost.cpp:CreateBrowser", "Setting up settings", "B");
 			settings->put_IsScriptEnabled(TRUE);
 			settings->put_AreDefaultContextMenusEnabled(TRUE);
 			settings->put_IsStatusBarEnabled(FALSE);
@@ -261,7 +243,6 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 			if (settings2) {
 				settings2->put_UserAgent(
 					L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-				DebugLog("browserhost.cpp:CreateBrowser", "UserAgent set", "B");
 			}
 		}
 
@@ -269,35 +250,56 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 		Resize();
 
 		mIsWebView2Initialized = true;
-		DebugLog("browserhost.cpp:CreateBrowser", "Init Flag Set", "B");
 
 		if (mPendingHTML.length() > 0) {
-			DebugLog("browserhost.cpp:CreateBrowser", "Navigating pending HTML", "A");
 			HRESULT hr_nav = mWebView->NavigateToString(mPendingHTML.c_str());
-			char navMsg[128];
-			sprintf(navMsg, "NavigateToString completed, HR=0x%08X", hr_nav);
-			DebugLog("browserhost.cpp:CreateBrowser", navMsg, "A");
 			mPendingHTML.clear();
 		}
 		else if (mPendingURL.Length() > 0) {
-			DebugLogW("browserhost.cpp:CreateBrowser", L"Navigating pending URL", "A");
 			std::wstring url = (wchar_t*)mPendingURL;
 
 			if (url.length() > 2 && url[1] == L':') {
-				wchar_t folder[MAX_PATH];
-				wcscpy(folder, url.c_str());
-				PathRemoveFileSpecW(folder);
-				UpdateFolderMapping(folder);
+				if (IsTempPreviewFilePath(url)) {
+					wchar_t fileUrl[2048];
+					DWORD cch = ARRAYSIZE(fileUrl);
+					HRESULT hrUrl = UrlCreateFromPathW(url.c_str(), fileUrl, &cch, 0);
+					if (SUCCEEDED(hrUrl)) {
+						url = fileUrl;
+					}
+				}
+				else {
+					CComQIPtr<ICoreWebView2_3> webView3 = mWebView;
+					if (webView3) {
+						wchar_t folder[MAX_PATH];
+						wcscpy(folder, url.c_str());
+						PathRemoveFileSpecW(folder);
+						UpdateFolderMapping(folder);
 
-				std::wstring filename = PathFindFileNameW(url.c_str());
-				url = L"https://markdown.internal/" + filename;
-				DebugLogW("browserhost.cpp:CreateBrowser", (L"Using mapped URL: " + url).c_str(), "A");
+						if (mFolderMappingEnabled) {
+							std::wstring filename = PathFindFileNameW(url.c_str());
+							url = L"https://markdown.internal/" + filename;
+						}
+						else {
+							wchar_t fileUrl[2048];
+							DWORD cch = ARRAYSIZE(fileUrl);
+							HRESULT hrUrl = UrlCreateFromPathW(url.c_str(), fileUrl, &cch, 0);
+							if (SUCCEEDED(hrUrl)) {
+								url = fileUrl;
+							}
+						}
+					}
+					else {
+						wchar_t fileUrl[2048];
+						DWORD cch = ARRAYSIZE(fileUrl);
+						HRESULT hrUrl = UrlCreateFromPathW(url.c_str(), fileUrl, &cch, 0);
+						if (SUCCEEDED(hrUrl)) {
+							url = fileUrl;
+						}
+					}
+				}
 			}
 
 			HRESULT hr_nav = mWebView->Navigate(url.c_str());
-			char navMsg[128];
-			sprintf(navMsg, "Navigate completed, HR=0x%08X", hr_nav);
-			DebugLog("browserhost.cpp:CreateBrowser", navMsg, "A");
 			mPendingURL.Empty();
 		}
 
@@ -388,7 +390,10 @@ void CBrowserHost::Resize()
 void CBrowserHost::UpdateFolderMapping(const std::wstring& folder)
 {
 	if (folder.empty())
+	{
+		mFolderMappingEnabled = false;
 		return;
+	}
 
 	mCurrentFolder = folder;
 	if (!mCurrentFolder.empty() && mCurrentFolder.back() == L'\\') {
@@ -396,73 +401,85 @@ void CBrowserHost::UpdateFolderMapping(const std::wstring& folder)
 	}
 
 	if (!mWebView)
+	{
+		mFolderMappingEnabled = false;
 		return;
+	}
 
 	CComQIPtr<ICoreWebView2_3> webView3 = mWebView;
 	if (!webView3)
+	{
+		mFolderMappingEnabled = false;
 		return;
+	}
 
 	webView3->ClearVirtualHostNameToFolderMapping(L"markdown.internal");
 	HRESULT hr = webView3->SetVirtualHostNameToFolderMapping(
 		L"markdown.internal", mCurrentFolder.c_str(),
 		COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
-
-	char msg[256];
-	sprintf(msg, "Updated mapping for markdown.internal to %s, HR=0x%08X", WideToUtf8(mCurrentFolder).c_str(), hr);
-	DebugLog("browserhost.cpp:UpdateFolderMapping", msg, "A");
+	mFolderMappingEnabled = SUCCEEDED(hr);
 }
 
 void CBrowserHost::Navigate(const wchar_t* url)
 {
-    DebugLogW("browserhost.cpp:Navigate", url, "A");
 	if (mIsWebView2Initialized && mWebView)
 	{
         std::wstring finalUrl = url;
         // If it's a local path (starts with X:), check if we can use our mapping
         if (finalUrl.length() > 2 && finalUrl[1] == L':') {
-            wchar_t folder[MAX_PATH];
-            wcscpy(folder, finalUrl.c_str());
-            PathRemoveFileSpecW(folder);
-
-			// VirtualHostNameToFolderMapping доступен только начиная с ICoreWebView2_3.
-			// Если интерфейса нет (старый runtime) — уходим на file:// навигацию.
-			CComQIPtr<ICoreWebView2_3> webView3 = mWebView;
-			if (webView3) {
-				UpdateFolderMapping(folder);
-
-				std::wstring filename = PathFindFileNameW(finalUrl.c_str());
-				finalUrl = L"https://markdown.internal/" + filename;
-				DebugLogW("browserhost.cpp:Navigate", (L"Using mapped URL: " + finalUrl).c_str(), "A");
-			}
-			else {
+			if (IsTempPreviewFilePath(finalUrl)) {
 				wchar_t fileUrl[2048];
 				DWORD cch = ARRAYSIZE(fileUrl);
 				HRESULT hrUrl = UrlCreateFromPathW(finalUrl.c_str(), fileUrl, &cch, 0);
 				if (SUCCEEDED(hrUrl)) {
 					finalUrl = fileUrl;
-					DebugLogW("browserhost.cpp:Navigate", (L"Fallback file URL: " + finalUrl).c_str(), "A");
+				}
+			}
+			else {
+				wchar_t folder[MAX_PATH];
+				wcscpy(folder, finalUrl.c_str());
+				PathRemoveFileSpecW(folder);
+
+				// VirtualHostNameToFolderMapping доступен только начиная с ICoreWebView2_3.
+				// Если интерфейса нет (старый runtime) — уходим на file:// навигацию.
+				CComQIPtr<ICoreWebView2_3> webView3 = mWebView;
+				if (webView3) {
+					UpdateFolderMapping(folder);
+
+					if (mFolderMappingEnabled) {
+						std::wstring filename = PathFindFileNameW(finalUrl.c_str());
+						finalUrl = L"https://markdown.internal/" + filename;
+					}
+					else {
+						wchar_t fileUrl[2048];
+						DWORD cch = ARRAYSIZE(fileUrl);
+						HRESULT hrUrl = UrlCreateFromPathW(finalUrl.c_str(), fileUrl, &cch, 0);
+						if (SUCCEEDED(hrUrl)) {
+							finalUrl = fileUrl;
+						}
+					}
 				}
 				else {
-					DebugLog("browserhost.cpp:Navigate", "UrlCreateFromPathW failed, using original path", "A");
+					wchar_t fileUrl[2048];
+					DWORD cch = ARRAYSIZE(fileUrl);
+					HRESULT hrUrl = UrlCreateFromPathW(finalUrl.c_str(), fileUrl, &cch, 0);
+					if (SUCCEEDED(hrUrl)) {
+						finalUrl = fileUrl;
+					}
 				}
 			}
         }
         
-		HRESULT hr = mWebView->Navigate(finalUrl.c_str());
-        char msg[128];
-        sprintf(msg, "WebView2 Navigate HR=0x%08X", hr);
-        DebugLog("browserhost.cpp:Navigate", msg, "A");
+		mWebView->Navigate(finalUrl.c_str());
 	}
 	else if (mWebBrowser)
 	{
 		mWebBrowser->Navigate(CComBSTR(url), NULL, NULL, NULL, NULL);
-        DebugLog("browserhost.cpp:Navigate", "WebBrowser Navigate", "A");
 	}
 	else
 	{
 		mPendingURL = url;
 		mPendingHTML.clear();
-        DebugLog("browserhost.cpp:Navigate", "Pending URL", "A");
 	}
 }
 
@@ -619,7 +636,6 @@ void CBrowserHost::SavePosition()
 	{
 		position = mScrollTop;
 		mWebView->get_Source(&loc_wide);
-        DebugLog("browserhost.cpp:SavePosition", "WebView2 Source acquired", "B");
 	}
 	else if (mWebBrowser)
 	{
@@ -1384,18 +1400,12 @@ STDMETHODIMP CBrowserHost::QueryInterface(REFIID riid, void ** ppvObject)
 ULONG STDMETHODCALLTYPE CBrowserHost::AddRef()
 { 
     ULONG rc = InterlockedIncrement((LONG*)&mRefCount);
-    char msg[64];
-    sprintf(msg, "rc=%d", rc);
-    DebugLog("browserhost.cpp:AddRef", msg, "B");
 	return rc; 
 }
 
 ULONG STDMETHODCALLTYPE CBrowserHost::Release()
 {
     ULONG rc = InterlockedDecrement((LONG*)&mRefCount);
-    char msg[64];
-    sprintf(msg, "rc=%d", rc);
-    DebugLog("browserhost.cpp:Release", msg, "B");
     if(rc == 0)
         delete this;
     return rc;
@@ -1488,19 +1498,21 @@ void CBrowserHost::LoadWebBrowserFromStreamWrapper(const BYTE* html, int length)
 	}
 	else if (mWebBrowser)
 	{
-		IStream* pStream = NULL;
-		pStream = SHCreateMemStream(html, length + 1);
+		IStream* pStream = SHCreateMemStream(html, (UINT)length);
+		if (!pStream)
+			return;
 
 		IDispatch* pHtmlDoc = NULL;
-		IPersistStreamInit* pPersistStreamInit = NULL;
-
 		mWebBrowser->get_Document(&pHtmlDoc);
 
 		if (pHtmlDoc) {
-			pHtmlDoc->QueryInterface(IID_IPersistStreamInit, (void**)&pPersistStreamInit);
-			pPersistStreamInit->InitNew();
-			pPersistStreamInit->Load(pStream);
-			pPersistStreamInit->Release();
+			IPersistStreamInit* pPersistStreamInit = NULL;
+			HRESULT hrQI = pHtmlDoc->QueryInterface(IID_IPersistStreamInit, (void**)&pPersistStreamInit);
+			if (SUCCEEDED(hrQI) && pPersistStreamInit) {
+				pPersistStreamInit->InitNew();
+				pPersistStreamInit->Load(pStream);
+				pPersistStreamInit->Release();
+			}
 			pHtmlDoc->Release();
 		}
 

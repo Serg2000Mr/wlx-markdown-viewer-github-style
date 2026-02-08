@@ -4,11 +4,148 @@
 
 #include <mshtmdid.h>
 #include "functions.h"
+#include <cstdio>
+#include <mutex>
 
 HINSTANCE hinst = NULL;
 
 SOptions options = {false, 0, 0, 0, 0, 0, "", ""};
 LARGE_INTEGER LogFirstCount = {0};
+static std::mutex gLogMutex;
+static std::wstring gLogFilePath;
+
+static bool EndsWithCi(const std::wstring& s, const std::wstring& suffix)
+{
+	if (s.size() < suffix.size())
+		return false;
+
+	size_t start = s.size() - suffix.size();
+	for (size_t i = 0; i < suffix.size(); i++)
+	{
+		wchar_t a = s[start + i];
+		wchar_t b = suffix[i];
+		if (a >= L'A' && a <= L'Z')
+			a = (wchar_t)(a - L'A' + L'a');
+		if (b >= L'A' && b <= L'Z')
+			b = (wchar_t)(b - L'A' + L'a');
+		if (a != b)
+			return false;
+	}
+	return true;
+}
+
+static std::wstring DirNameOfPath(const std::wstring& fullPath)
+{
+	size_t slash = fullPath.find_last_of(L"\\/");
+	if (slash == std::wstring::npos)
+		return L"";
+	return fullPath.substr(0, slash);
+}
+
+static std::wstring GetPrimaryLogRoot()
+{
+	wchar_t modulePath[MAX_PATH] = {0};
+	if (hinst && GetModuleFileNameW(hinst, modulePath, MAX_PATH))
+	{
+		std::wstring moduleDir = DirNameOfPath(modulePath);
+		std::wstring lower = moduleDir;
+		for (auto& ch : lower)
+			if (ch >= L'A' && ch <= L'Z')
+				ch = (wchar_t)(ch - L'A' + L'a');
+
+		const std::wstring binRelease = L"\\bin\\release";
+		const std::wstring binDebug = L"\\bin\\debug";
+		if (EndsWithCi(lower, binRelease))
+		{
+			std::wstring root = moduleDir.substr(0, moduleDir.size() - binRelease.size());
+			if (!root.empty() && (root.back() == L'\\' || root.back() == L'/'))
+				root.pop_back();
+			return root;
+		}
+		if (EndsWithCi(lower, binDebug))
+		{
+			std::wstring root = moduleDir.substr(0, moduleDir.size() - binDebug.size());
+			if (!root.empty() && (root.back() == L'\\' || root.back() == L'/'))
+				root.pop_back();
+			return root;
+		}
+
+		return moduleDir;
+	}
+
+	wchar_t cwd[MAX_PATH] = {0};
+	if (GetCurrentDirectoryW(MAX_PATH, cwd))
+		return std::wstring(cwd);
+
+	return L".";
+}
+
+static std::wstring GetFallbackLogRoot()
+{
+	wchar_t buf[MAX_PATH] = {0};
+	DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+	if (n > 0 && n < MAX_PATH)
+	{
+		std::wstring dir = std::wstring(buf) + L"\\TotalCommanderMarkdownViewPlugin";
+		CreateDirectoryW(dir.c_str(), NULL);
+		return dir;
+	}
+
+	wchar_t tmp[MAX_PATH] = {0};
+	if (GetTempPathW(MAX_PATH, tmp))
+	{
+		std::wstring dir = std::wstring(tmp) + L"TotalCommanderMarkdownViewPlugin";
+		CreateDirectoryW(dir.c_str(), NULL);
+		return dir;
+	}
+
+	return L".";
+}
+
+static std::wstring EnsureLogFilePath()
+{
+	if (!gLogFilePath.empty())
+		return gLogFilePath;
+
+	std::wstring primary = GetPrimaryLogRoot();
+	std::wstring candidate = primary;
+	if (!candidate.empty() && candidate.back() != L'\\' && candidate.back() != L'/')
+		candidate += L"\\";
+	candidate += L"mdv_translate.log";
+
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, candidate.c_str(), L"ab") == 0 && f)
+	{
+		fclose(f);
+		gLogFilePath = candidate;
+		return gLogFilePath;
+	}
+	if (f)
+		fclose(f);
+
+	std::wstring fallback = GetFallbackLogRoot();
+	candidate = fallback;
+	if (!candidate.empty() && candidate.back() != L'\\' && candidate.back() != L'/')
+		candidate += L"\\";
+	candidate += L"mdv_translate.log";
+
+	gLogFilePath = candidate;
+	return gLogFilePath;
+}
+
+static void AppendLogUtf8Line(const std::string& lineUtf8)
+{
+	std::lock_guard<std::mutex> lock(gLogMutex);
+
+	std::wstring path = EnsureLogFilePath();
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, path.c_str(), L"ab") != 0 || !f)
+		return;
+
+	fwrite(lineUtf8.data(), 1, lineUtf8.size(), f);
+	fwrite("\r\n", 1, 2, f);
+	fclose(f);
+}
 
 //					   #--------------------#
 //				 	   |		            |
@@ -371,19 +508,16 @@ HWND GetBrowserHostWnd(HWND child_hwnd)
 
 void DebugLog(const char* location, const char* message, const char* hypothesisId)
 {
-    std::ofstream logFile("c:\\1С\\ИИ\\MarkDown\\.cursor\\debug.log", std::ios::app);
-    if (logFile.is_open())
-    {
-        logFile << "{\"id\":\"log_" << time(NULL) << "\",\"timestamp\":" << GetTickCount() 
-                << ",\"location\":\"" << location << "\",\"message\":\"" << message 
-                << "\",\"hypothesisId\":\"" << hypothesisId << "\",\"sessionId\":\"debug-session\",\"runId\":\"run1\"}" << std::endl;
-        logFile.close();
-    }
+	(void)location;
+	(void)message;
+	(void)hypothesisId;
 }
 
 void DebugLogW(const char* location, const wchar_t* message, const char* hypothesisId)
 {
-    DebugLog(location, WideToUtf8(message).c_str(), hypothesisId);
+	(void)location;
+	(void)message;
+	(void)hypothesisId;
 }
 /*
 CBrowserHost* GetBrowserHost(HWND child_hwnd)
@@ -407,29 +541,22 @@ CBrowserHost* GetBrowserHost(HWND child_hwnd)
 
 int Log(char* Section, char* Text)
 {
-	char num[10];int i=0;do itoa(++i,num,10);while(GetPrivateProfileString(Section,num,"",num+6,2,options.LogIniFileName));
-	WritePrivateProfileString(Section,num,Text,options.LogIniFileName);
-	return i;
+	(void)Section;
+	(void)Text;
+	return 0;
 }
 void LogTimeReset()
 {
-	QueryPerformanceCounter(&LogFirstCount);
+	return;
 }
 
 void LogTime(char* Text)
 {
-	LARGE_INTEGER Frequency, Count;
-	QueryPerformanceFrequency(&Frequency);
-	QueryPerformanceCounter(&Count);
-	char time_str[80];
-	gcvt((Count.QuadPart-LogFirstCount.QuadPart)/(Frequency.QuadPart/1000.),10,time_str);
-	WritePrivateProfileString("Times",time_str,Text,options.LogIniFileName);
+	(void)Text;
 }
 void LogTime(int number)
 {
-	char str_num[16];
-	itoa(number,str_num,10);
-	LogTime(str_num);
+	(void)number;
 }
 
 void DisplayLastError(void)

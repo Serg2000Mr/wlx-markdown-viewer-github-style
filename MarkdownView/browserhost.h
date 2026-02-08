@@ -47,6 +47,7 @@ public:
 	std::wstring mPendingHTML;
 	CComBSTR mPendingURL;
     std::wstring mCurrentFolder;
+	bool mFolderMappingEnabled;
     void UpdateFolderMapping(const std::wstring& folder);
 	DWORD mEventsCookie;
 	int mRefCount;

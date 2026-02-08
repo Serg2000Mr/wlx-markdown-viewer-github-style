@@ -107,12 +107,157 @@ namespace {
 	bool gTranslateEnabled = false;
 	bool gTranslateAuto = false;
 	char gTranslateTargetLang[16]{};
+	std::wstring gTranslateUiTranslate = L"Translate";
+	std::wstring gTranslateUiBusy = L"Translating...";
+	std::wstring gTranslateUiOriginal = L"Original";
 
 	static std::wstring ToLowerWin(std::wstring s)
 	{
 		if (!s.empty())
 			CharLowerBuffW(&s[0], (DWORD)s.size());
 		return s;
+	}
+
+	static std::wstring GetUserLocaleNameLower()
+	{
+		wchar_t name[LOCALE_NAME_MAX_LENGTH]{};
+		if (!GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH))
+		{
+			LANGID langId = GetUserDefaultUILanguage();
+			LCID lcid = MAKELCID(langId, SORT_DEFAULT);
+			LCIDToLocaleName(lcid, name, LOCALE_NAME_MAX_LENGTH, 0);
+		}
+		return ToLowerWin(std::wstring(name));
+	}
+
+	static std::string GetUserLangTagForTranslate()
+	{
+		std::wstring loc = GetUserLocaleNameLower();
+		if (loc.rfind(L"zh", 0) == 0)
+		{
+			if (loc.find(L"hant") != std::wstring::npos || loc.find(L"-tw") != std::wstring::npos || loc.find(L"-hk") != std::wstring::npos || loc.find(L"-mo") != std::wstring::npos)
+				return "zh-TW";
+			return "zh-CN";
+		}
+		if (loc.size() >= 2)
+		{
+			std::string code;
+			code.push_back((char)loc[0]);
+			code.push_back((char)loc[1]);
+			return code;
+		}
+		return "en";
+	}
+
+	static void InitTranslateUiStrings(const std::string& langTag)
+	{
+		if (langTag == "ru")
+		{
+			gTranslateUiTranslate = L"Перевести";
+			gTranslateUiBusy = L"Перевожу...";
+			gTranslateUiOriginal = L"Исходный";
+			return;
+		}
+		if (langTag == "es")
+		{
+			gTranslateUiTranslate = L"Traducir";
+			gTranslateUiBusy = L"Traduciendo...";
+			gTranslateUiOriginal = L"Original";
+			return;
+		}
+		if (langTag == "fr")
+		{
+			gTranslateUiTranslate = L"Traduire";
+			gTranslateUiBusy = L"Traduction...";
+			gTranslateUiOriginal = L"Original";
+			return;
+		}
+		if (langTag == "de")
+		{
+			gTranslateUiTranslate = L"Übersetzen";
+			gTranslateUiBusy = L"Übersetze...";
+			gTranslateUiOriginal = L"Original";
+			return;
+		}
+		if (langTag == "it")
+		{
+			gTranslateUiTranslate = L"Traduci";
+			gTranslateUiBusy = L"Traduzione...";
+			gTranslateUiOriginal = L"Originale";
+			return;
+		}
+		if (langTag == "pt")
+		{
+			gTranslateUiTranslate = L"Traduzir";
+			gTranslateUiBusy = L"Traduzindo...";
+			gTranslateUiOriginal = L"Original";
+			return;
+		}
+		if (langTag == "ja")
+		{
+			gTranslateUiTranslate = L"翻訳";
+			gTranslateUiBusy = L"翻訳中...";
+			gTranslateUiOriginal = L"原文";
+			return;
+		}
+		if (langTag == "ko")
+		{
+			gTranslateUiTranslate = L"번역";
+			gTranslateUiBusy = L"번역 중...";
+			gTranslateUiOriginal = L"원문";
+			return;
+		}
+		if (langTag == "zh-CN")
+		{
+			gTranslateUiTranslate = L"翻译";
+			gTranslateUiBusy = L"翻译中...";
+			gTranslateUiOriginal = L"原文";
+			return;
+		}
+		if (langTag == "zh-TW")
+		{
+			gTranslateUiTranslate = L"翻譯";
+			gTranslateUiBusy = L"翻譯中...";
+			gTranslateUiOriginal = L"原文";
+			return;
+		}
+		gTranslateUiTranslate = L"Translate";
+		gTranslateUiBusy = L"Translating...";
+		gTranslateUiOriginal = L"Original";
+	}
+
+	static std::string WideToUtf8(const std::wstring& ws)
+	{
+		if (ws.empty())
+			return std::string();
+		int needed = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+		if (needed <= 0)
+			return std::string();
+		std::string out;
+		out.resize(needed);
+		WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], needed, nullptr, nullptr);
+		return out;
+	}
+
+	static std::string EscapeJsSingleQuoted(const std::string& s)
+	{
+		std::string out;
+		out.reserve(s.size() + 8);
+		for (char c : s)
+		{
+			if (c == '\\' || c == '\'')
+			{
+				out.push_back('\\');
+				out.push_back(c);
+			}
+			else if (c == '\r')
+				out += "\\r";
+			else if (c == '\n')
+				out += "\\n";
+			else
+				out.push_back(c);
+		}
+		return out;
 	}
 
 	static bool TryGetFileInfo(const std::wstring& path, ULONGLONG& size, ULONGLONG& lastWrite)
@@ -171,18 +316,75 @@ namespace {
 		}
 	}
 
-	static void EnsureBaseTag(std::string& html)
+	static std::string BuildBaseHref(CBrowserHost* browserHost, const wchar_t* folderPath)
 	{
-		const char* baseTag = "<base href='https://markdown.internal/'>";
-		if (html.find(baseTag) != std::string::npos)
+		bool useInternal = false;
+		if (browserHost && browserHost->mWebView) {
+			CComQIPtr<ICoreWebView2_3> webView3 = browserHost->mWebView;
+			useInternal = (bool)webView3 && browserHost->mFolderMappingEnabled;
+		}
+
+		if (useInternal)
+			return "https://markdown.internal/_markdown_preview_temp.html";
+
+		if (!folderPath || !folderPath[0])
+			return "file:///";
+
+		std::wstring baseFile = folderPath;
+		if (!baseFile.empty() && baseFile.back() != L'\\')
+			baseFile.push_back(L'\\');
+		baseFile += L"_markdown_preview_temp.html";
+
+		wchar_t fileUrl[2048]{};
+		DWORD cch = ARRAYSIZE(fileUrl);
+		HRESULT hr = UrlCreateFromPathW(baseFile.c_str(), fileUrl, &cch, 0);
+		if (SUCCEEDED(hr) && fileUrl[0])
+			return WideToUtf8(fileUrl);
+
+		return "file:///";
+	}
+
+	static bool BuildSafeTempHtmlPath(wchar_t* outPath, size_t outCount)
+	{
+		if (!outPath || outCount == 0)
+			return false;
+
+		outPath[0] = L'\0';
+
+		wchar_t localAppData[MAX_PATH]{};
+		DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, ARRAYSIZE(localAppData));
+		if (n == 0 || n >= ARRAYSIZE(localAppData))
+			return false;
+
+		std::wstring baseDir = std::wstring(localAppData) + L"\\TotalCommanderMarkdownViewPlugin";
+		std::wstring dir = baseDir + L"\\l";
+		CreateDirectoryW(baseDir.c_str(), NULL);
+		CreateDirectoryW(dir.c_str(), NULL);
+
+		std::wstring fullPath = dir + L"\\_markdown_preview_temp.html";
+		if (fullPath.size() + 1 > outCount)
+			return false;
+
+		wcscpy_s(outPath, outCount, fullPath.c_str());
+		return true;
+	}
+
+	static bool FindTagInsertPosCi(const std::string& html, const char* tagName, size_t& insertPos);
+
+	static void EnsureBaseTag(std::string& html, const std::string& baseHref)
+	{
+		std::string lower;
+		lower.resize(html.size());
+		std::transform(html.begin(), html.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+		if (lower.find("<base") != std::string::npos)
 			return;
-		size_t headPos = html.find("<head");
-		if (headPos == std::string::npos)
+		std::string baseTag = "<base href='";
+		baseTag += baseHref;
+		baseTag += "'>";
+		size_t headInsertPos = 0;
+		if (!FindTagInsertPosCi(html, "head", headInsertPos))
 			return;
-		size_t gt = html.find('>', headPos);
-		if (gt == std::string::npos)
-			return;
-		html.insert(gt + 1, baseTag);
+		html.insert(headInsertPos, baseTag);
 	}
 
 	static bool FindTagInsertPosCi(const std::string& html, const char* tagName, size_t& insertPos)
@@ -203,6 +405,40 @@ namespace {
 		return true;
 	}
 
+	static void InjectInPageAnchorHandler(std::string& html)
+	{
+		if (html.find("id='__mdv_anchor_fix'") != std::string::npos)
+			return;
+
+		size_t headPos = 0;
+		if (!FindTagInsertPosCi(html, "head", headPos))
+			return;
+
+		std::string script = "<script id='__mdv_anchor_fix'>(function(){"
+			"document.addEventListener('click',function(e){"
+			" var a=e.target;"
+			" while(a&&a.tagName!=='A'){a=a.parentElement;}"
+			" if(!a) return;"
+			" var href=a.getAttribute('href');"
+			" if(!href||href.length<2||href[0]!=='#') return;"
+			" var id=href.slice(1);"
+			" var el=document.getElementById(id);"
+			" if(!el){"
+			"  try{"
+			"   var d=decodeURIComponent(id);"
+			"   el=document.getElementById(d)||document.getElementsByName(d)[0];"
+			"  }catch(_){ }"
+			" }"
+			" if(!el) return;"
+			" e.preventDefault();"
+			" try{el.scrollIntoView({block:'start'});}catch(_){try{el.scrollIntoView(true);}catch(__){}}"
+			" try{history.replaceState(null,'',href);}catch(_){try{location.hash=href;}catch(__){}}"
+			"},true);"
+			"})();</script>";
+
+		html.insert(headPos, script);
+	}
+
 	static void InjectGoogleTranslateWidget(std::string& html)
 	{
 		if (!gTranslateEnabled)
@@ -214,70 +450,197 @@ namespace {
 		if (!FindTagInsertPosCi(html, "head", headPos))
 			return;
 
-		std::string target = gTranslateTargetLang[0] ? std::string(gTranslateTargetLang) : std::string("ru");
+		std::string target = gTranslateTargetLang[0] ? std::string(gTranslateTargetLang) : GetUserLangTagForTranslate();
+
+		std::string uiTranslate = EscapeJsSingleQuoted(WideToUtf8(gTranslateUiTranslate));
+		std::string uiBusy = EscapeJsSingleQuoted(WideToUtf8(gTranslateUiBusy));
+		std::string uiOriginal = EscapeJsSingleQuoted(WideToUtf8(gTranslateUiOriginal));
 		
 		// Бронебойный CSS: фиксируем body и скрываем все, что похоже на Google Translate
 		std::string headInject = "<style>"
 			"html,body{top:0!important;margin-top:0!important;position:relative!important;}"
-			".goog-te-banner-frame,iframe[class*='goog-te'],#goog-gt-tt,#goog-gt-vt,.goog-te-balloon-frame{display:none!important;visibility:hidden!important;}"
-			".skiptranslate{display:none!important;}"
-			"#__mdv_gt{display:none!important;}"
+			".goog-te-banner-frame,iframe.goog-te-banner-frame{display:none!important;visibility:hidden!important;}"
+			".skiptranslate:not(#__mdv_gt){display:none!important;}"
+			"#__mdv_gt .skiptranslate{display:block!important;visibility:visible!important;}"
+			"#goog-gt-tt,#goog-gt-vt,.goog-te-balloon-frame{display:none!important;visibility:hidden!important;}"
 			"</style>";
 
 		// Скрипт инициализации с уведомлением C++ о состоянии
 		headInject += "<script>"
+			"window.__mdv_gt_lbl_translate='" + uiTranslate + "';"
+			"window.__mdv_gt_lbl_busy='" + uiBusy + "';"
+			"window.__mdv_gt_lbl_original='" + uiOriginal + "';"
+			"window.__mdv_gt_target='" + EscapeJsSingleQuoted(target) + "';"
+			"window.__mdv_gt_t0=0;"
+			"window.__mdv_gt_now=function(){ try{ return (window.performance && performance.now)? performance.now(): Date.now(); }catch(e){ return Date.now(); } };"
+			"window.__mdv_gt_diag=function(ev,extra){"
+			" try{"
+			"  if(window.chrome && window.chrome.webview){"
+			"   var dt=window.__mdv_gt_t0? (window.__mdv_gt_now()-window.__mdv_gt_t0) : 0;"
+			"   window.chrome.webview.postMessage('mdv_gt_diag|'+dt.toFixed(1)+'|'+(ev||'')+'|'+(extra||''));"
+			"  }"
+			" }catch(e){}"
+			"};"
+			"window.__mdv_gt_loaded=false;"
+			"window.__mdv_gt_ready=false;"
+			"window.__mdv_gt_pending=false;"
 			"window.__mdv_gt_notify=function(state,text){"
 			" if(window.chrome && window.chrome.webview){"
 			"  window.chrome.webview.postMessage({type:'gt_state',state:state,text:text});"
 			" }"
 			"};"
-			"window.__mdv_gt_load=function(f){"
-			" if(window.__mdv_gt_state==='done' && !f){"
-			"  try{sessionStorage.setItem('__mdv_no_auto','1');}catch(e){}"
-			"  window.location.reload(); return;"
-			" }"
-			" if(window.__mdv_gt_state==='busy') return;"
-			" window.__mdv_gt_state='busy';"
-			" window.__mdv_gt_notify('busy','Перевожу...');"
-			" if(window.__mdv_gt_loaded){ window.__mdv_gt_init(); return; }"
+			"window.__mdv_gt_preload=function(){"
+			" if(window.__mdv_gt_ready || window.__mdv_gt_loaded) return;"
 			" window.__mdv_gt_loaded=true;"
 			" var s=document.createElement('script');"
-			" s.src='https://translate.google.com/translate_a/element.js?cb=__mdv_gt_init';"
+			" s.onerror=function(){ window.__mdv_gt_loaded=false; };"
+			" s.src='https://translate.google.com/translate_a/element.js?cb=__mdv_gt_boot';"
 			" document.head.appendChild(s);"
 			"};"
+			"try{ window.__mdv_gt_preload(); }catch(e){}"
+			"window.__mdv_gt_load=function(f){"
+			" if(window.__mdv_gt_state==='done' && !f){"
+			"  try{if(window.__mdv_gt_doneTimer) clearTimeout(window.__mdv_gt_doneTimer);}catch(e){}"
+			"  try{if(window.__mdv_gt_watchdog) clearTimeout(window.__mdv_gt_watchdog);}catch(e){}"
+			"  try{"
+			"   document.cookie='googtrans=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';"
+			"   if(location.hostname) document.cookie='googtrans=;expires=Thu, 01 Jan 1970 00:00:00 GMT;domain='+location.hostname+';path=/';"
+			"  }catch(e){}"
+			"  try{sessionStorage.setItem('__mdv_no_auto','1');}catch(e){}"
+			"  try{if(window.__mdv_gt_revertTimer) clearTimeout(window.__mdv_gt_revertTimer);}catch(e){}"
+			"  window.__mdv_gt_revertTimer=setTimeout(function(){"
+			"   window.__mdv_gt_state='idle';"
+			"   window.__mdv_gt_notify('idle',window.__mdv_gt_lbl_translate);"
+			"   window.location.reload();"
+			"  }, 200);"
+			"  return;"
+			" }"
+			" if(window.__mdv_gt_state==='busy'){"
+			"  try{"
+			"   if(window.__mdv_gt_busyAt && (Date.now()-window.__mdv_gt_busyAt)>20000){"
+			"    window.__mdv_gt_loaded=false;"
+			"    window.__mdv_gt_state='idle';"
+			"    window.__mdv_gt_notify('idle',window.__mdv_gt_lbl_translate);"
+			"   } else { return; }"
+			"  }catch(e){ return; }"
+			" }"
+			" window.__mdv_gt_t0=window.__mdv_gt_now();"
+			" window.__mdv_gt_diag('start', f?'auto':'click');"
+			" window.__mdv_gt_state='busy';"
+			" window.__mdv_gt_busyAt=Date.now();"
+			" try{if(window.__mdv_gt_watchdog) clearTimeout(window.__mdv_gt_watchdog);}catch(e){}"
+			" window.__mdv_gt_watchdog=setTimeout(function(){"
+			"  if(window.__mdv_gt_state==='busy'){"
+			"   window.__mdv_gt_loaded=false;"
+			"   window.__mdv_gt_state='idle';"
+			"   window.__mdv_gt_notify('idle',window.__mdv_gt_lbl_translate);"
+			"  }"
+			" }, 20000);"
+			" try{"
+			"  var t=(window.__mdv_gt_target||'en');"
+			"  var v='/auto/'+t;"
+			"  document.cookie='googtrans='+v+';path=/';"
+			"  if(location.hostname) document.cookie='googtrans='+v+';domain='+location.hostname+';path=/';"
+			" }catch(e){}"
+			" window.__mdv_gt_diag('cookie','set');"
+			" window.__mdv_gt_notify('busy',window.__mdv_gt_lbl_busy);"
+			" if(window.__mdv_gt_ready){ window.__mdv_gt_init(); return; }"
+			" if(window.__mdv_gt_loaded){ window.__mdv_gt_pending=true; window.__mdv_gt_diag('pending','script'); return; }"
+			" window.__mdv_gt_loaded=true;"
+			" window.__mdv_gt_pending=true;"
+			" window.__mdv_gt_diag('script','load');"
+			" var s=document.createElement('script');"
+			" s.onerror=function(){"
+			"  try{if(window.__mdv_gt_watchdog) clearTimeout(window.__mdv_gt_watchdog);}catch(e){}"
+			"  window.__mdv_gt_loaded=false;"
+			 "  window.__mdv_gt_ready=false;"
+			 "  window.__mdv_gt_pending=false;"
+			"  window.__mdv_gt_state='idle';"
+			"  window.__mdv_gt_notify('idle',window.__mdv_gt_lbl_translate);"
+			 "  window.__mdv_gt_diag('script','error');"
+			" };"
+			" s.src='https://translate.google.com/translate_a/element.js?cb=__mdv_gt_boot';"
+			" document.head.appendChild(s);"
+			"};"
+			"window.__mdv_gt_boot=function(){"
+			" window.__mdv_gt_ready=true;"
+			" window.__mdv_gt_diag('script','ready');"
+			" try{"
+			"  if(!window.__mdv_gt_el) window.__mdv_gt_el = new google.translate.TranslateElement({pageLanguage:'auto',autoDisplay:false},'__mdv_gt');"
+			" }catch(e){}"
+			" if(window.__mdv_gt_pending && window.__mdv_gt_state==='busy'){"
+			"  window.__mdv_gt_pending=false;"
+			"  try{ window.__mdv_gt_init(); }catch(e){}"
+			" }"
+			"};"
 			"window.__mdv_gt_init=function(){"
+			" window.__mdv_gt_diag('init','');"
 			" try{"
 			"  if(!window.__mdv_gt_el) window.__mdv_gt_el = new google.translate.TranslateElement({pageLanguage:'auto',autoDisplay:false},'__mdv_gt');"
 			" }catch(e){}"
 			" var target='" + target + "';"
-			" var check=function(){"
+			" var checkTries=0;"
+			" var done=0;"
+			" var apply=function(){"
+			"  if(done) return;"
 			"  var s=document.querySelector('select.goog-te-combo');"
 			"  if(s && s.options && s.options.length>0){"
+			"   done=1;"
+			"   window.__mdv_gt_diag('combo','found');"
 			"   s.value=target; s.dispatchEvent(new Event('change',{bubbles:true}));"
+			"   window.__mdv_gt_diag('combo','change');"
 			"   finish();"
-			"  } else { setTimeout(check, 200); }"
+			"   return true;"
+			"  }"
+			"  return false;"
+			" };"
+			" try{"
+			"  var root=document.getElementById('__mdv_gt');"
+			"  if(root && !root.__mdv_gt_mo){"
+			"   root.__mdv_gt_mo=1;"
+			"   var mo=new MutationObserver(function(){ try{ if(apply()) mo.disconnect(); }catch(e){} });"
+			"   mo.observe(root,{childList:true,subtree:true});"
+			"  }"
+			" }catch(e){}"
+			" var check=function(){"
+			"  if(apply()) return;"
+			"  if(++checkTries < 150) { setTimeout(check, 100); }"
+			"  else {"
+			"   try{if(window.__mdv_gt_watchdog) clearTimeout(window.__mdv_gt_watchdog);}catch(e){}"
+			"   window.__mdv_gt_loaded=false;"
+			"   window.__mdv_gt_state='idle';"
+			"   window.__mdv_gt_notify('idle',window.__mdv_gt_lbl_translate);"
+			"   window.__mdv_gt_diag('combo','timeout');"
+			"  }"
 			" };"
 			" var finish=function(){"
 			"  var tries=0;"
+			"  var scheduleDone=function(){"
+			"   if(window.__mdv_gt_state==='done') return;"
+			"   window.__mdv_gt_state='done';"
+			"   try{if(window.__mdv_gt_watchdog) clearTimeout(window.__mdv_gt_watchdog);}catch(e){}"
+			"   window.__mdv_gt_diag('translated','done');"
+			"   window.__mdv_gt_notify('done',window.__mdv_gt_lbl_original);"
+			"  };"
 			"  var waitTranslate=function(){"
 			"   var isTrans=document.documentElement.classList.contains('translated-ltr') || document.documentElement.classList.contains('translated-rtl');"
-			"   var fontElem=document.querySelector('font');"
-			"   if(isTrans && fontElem && fontElem.parentElement && fontElem.parentElement.nodeName!=='FONT'){"
-			"    window.__mdv_gt_state='done';"
-			"    window.__mdv_gt_notify('done','Вернуть');"
-			"   } else if(++tries < 100) { setTimeout(waitTranslate, 250); }"
+			"   if(isTrans){"
+			"    scheduleDone();"
+			"   } else if(++tries < 150) { setTimeout(waitTranslate, 100); }"
 			"   else {"
-			"    window.__mdv_gt_state='done';"
-			"    window.__mdv_gt_notify('done','Вернуть');"
+			"    try{if(window.__mdv_gt_watchdog) clearTimeout(window.__mdv_gt_watchdog);}catch(e){}"
+			"    window.__mdv_gt_state='idle';"
+			"    window.__mdv_gt_notify('idle',window.__mdv_gt_lbl_translate);"
 			"   }"
 			"  };"
-			"  setTimeout(waitTranslate, 800);"
+			"  setTimeout(waitTranslate, 0);"
 			" };"
 			" check();"
 			"};"
 			"document.addEventListener('DOMContentLoaded',function(){"
 			" var auto=" + (gTranslateAuto ? "1" : "0") + ";"
 			" var noAuto=null; try{noAuto=sessionStorage.getItem('__mdv_no_auto'); sessionStorage.removeItem('__mdv_no_auto');}catch(e){}"
+			" try{ window.__mdv_gt_preload(); }catch(e){}"
 			" if(auto && !noAuto) window.__mdv_gt_load(true);"
 			"});"
 			"</script>";
@@ -287,7 +650,7 @@ namespace {
 		size_t bodyPos = 0;
 		if (!FindTagInsertPosCi(html, "body", bodyPos))
 			return;
-		std::string bodyInject = "<div id='__mdv_gt' style='display:none'></div>";
+		std::string bodyInject = "<div id='__mdv_gt' style='position:fixed;left:0;top:0;height:40px;width:240px;overflow:hidden;opacity:0;pointer-events:none;z-index:-1'></div>";
 		html.insert(bodyPos, bodyInject);
 	}
 
@@ -360,7 +723,20 @@ void InitProc()
 
 	gTranslateEnabled = GetPrivateProfileInt("Translate", "Enabled", 0, options.IniFileName) != 0;
 	gTranslateAuto = GetPrivateProfileInt("Translate", "Auto", 0, options.IniFileName) != 0;
-	GetPrivateProfileString("Translate", "Target", "ru", gTranslateTargetLang, (DWORD)sizeof(gTranslateTargetLang), options.IniFileName);
+	char targetBuf[16]{};
+	GetPrivateProfileString("Translate", "Target", "auto", targetBuf, (DWORD)sizeof(targetBuf), options.IniFileName);
+
+	std::string userLang = GetUserLangTagForTranslate();
+	InitTranslateUiStrings(userLang);
+
+	std::string target = targetBuf;
+	std::transform(target.begin(), target.end(), target.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+	if (target.empty() || target == "auto")
+		target = userLang;
+	if (target.size() >= sizeof(gTranslateTargetLang))
+		target.resize(sizeof(gTranslateTargetLang) - 1);
+	memset(gTranslateTargetLang, 0, sizeof(gTranslateTargetLang));
+	memcpy(gTranslateTargetLang, target.c_str(), target.size());
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -477,7 +853,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				//SendMessage(hWnd, WM_IEVIEW_SEARCH, 0, 0);
 				break;
 			case TBB_TRANSLATE:
-				browser_host->ExecuteScript(L"window.__mdv_gt_load();");
+				browser_host->ExecuteScript(L"if(window.__mdv_gt_load) window.__mdv_gt_load();");
 				break;
 			}
 		}
@@ -563,22 +939,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 HWND Create_Toolbar(HWND ListWin)
 {
-	TBBUTTON tb_buttons[13] = 
+	TBBUTTON tb_buttons[] = 
 	{
 		{0, TBB_BACK,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
 		{1, TBB_FORWARD,	TBSTATE_ENABLED, BTNS_BUTTON, NULL},
 		{2, TBB_STOP,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
 		{3, TBB_REFRESH,	TBSTATE_ENABLED, BTNS_BUTTON, NULL},
-		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
+		{6, 0,				TBSTATE_ENABLED, BTNS_SEP,	  NULL},
 		{5, TBB_COPY,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
 		//{6, TBB_PASTE,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
-		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
+		{6, 0,				TBSTATE_ENABLED, BTNS_SEP,	  NULL},
 		{4, TBB_PRINT,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
-		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
+		{6, 0,				TBSTATE_ENABLED, BTNS_SEP,	  NULL},
 		{7, TBB_SEARCH,		TBSTATE_ENABLED, BTNS_BUTTON, NULL},
-		{-1, -1,			TBSTATE_ENABLED, BTNS_SEP,	  NULL},
-		{I_IMAGENONE, TBB_TRANSLATE, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT, NULL}
+		{6, 0,				TBSTATE_ENABLED, BTNS_SEP,	  NULL},
+			{I_IMAGENONE, TBB_TRANSLATE, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT, NULL}
 	};
+	const int tb_count = (int)(sizeof(tb_buttons) / sizeof(tb_buttons[0]));
+	for (int i = 0; i < tb_count; i++)
+		tb_buttons[i].iString = -1;
 
 	char parent_class_name[64];
 	GetClassName(GetParent(ListWin), parent_class_name, 64);
@@ -588,12 +967,18 @@ HWND Create_Toolbar(HWND ListWin)
 	HWND toolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD|CCS_TOP|TBSTYLE_LIST|TBSTYLE_FLAT|TBSTYLE_TOOLTIPS, 0, 0, 0, 0, ListWin, NULL, hinst, NULL); 
 	SendMessage(toolbar, TB_BUTTONSTRUCTSIZE, (WPARAM) sizeof(TBBUTTON), 0); 
 	SendMessage(toolbar, TB_SETIMAGELIST, 0, (LPARAM)img_list);
-	
-	// Add string for the translate button
-	LRESULT string_index = SendMessage(toolbar, TB_ADDSTRING, 0, (LPARAM)L"Перевести\0");
-	tb_buttons[12].iString = string_index;
+	SendMessage(toolbar, TB_SETUNICODEFORMAT, TRUE, 0);
 
-	SendMessage(toolbar, TB_ADDBUTTONS, 13, (LPARAM)&tb_buttons);
+	SendMessage(toolbar, TB_ADDBUTTONS, (WPARAM)tb_count, (LPARAM)&tb_buttons);
+	{
+		TBBUTTONINFOW tbbi = { 0 };
+		tbbi.cbSize = sizeof(TBBUTTONINFOW);
+		tbbi.dwMask = TBIF_TEXT | TBIF_IMAGE;
+		tbbi.pszText = (LPWSTR)gTranslateUiTranslate.c_str();
+		tbbi.iImage = I_IMAGENONE;
+		SendMessageW(toolbar, TB_SETBUTTONINFOW, TBB_TRANSLATE, (LPARAM)&tbbi);
+		SendMessage(toolbar, TB_ENABLEBUTTON, TBB_TRANSLATE, MAKELPARAM(TRUE, 0));
+	}
 	SendMessage(toolbar, TB_AUTOSIZE, 0, 0);
 
 	ShowWindow(toolbar, SW_SHOW);
@@ -671,7 +1056,20 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 {
 	gTranslateEnabled = GetPrivateProfileInt("Translate", "Enabled", 0, options.IniFileName) != 0;
 	gTranslateAuto = GetPrivateProfileInt("Translate", "Auto", 0, options.IniFileName) != 0;
-	GetPrivateProfileString("Translate", "Target", "ru", gTranslateTargetLang, (DWORD)sizeof(gTranslateTargetLang), options.IniFileName);
+	char targetBuf[16]{};
+	GetPrivateProfileString("Translate", "Target", "auto", targetBuf, (DWORD)sizeof(targetBuf), options.IniFileName);
+
+	std::string userLang = GetUserLangTagForTranslate();
+	InitTranslateUiStrings(userLang);
+
+	std::string target = targetBuf;
+	std::transform(target.begin(), target.end(), target.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+	if (target.empty() || target == "auto")
+		target = userLang;
+	if (target.size() >= sizeof(gTranslateTargetLang))
+		target.resize(sizeof(gTranslateTargetLang) - 1);
+	memset(gTranslateTargetLang, 0, sizeof(gTranslateTargetLang));
+	memcpy(gTranslateTargetLang, target.c_str(), target.size());
 
 	CHAR css[MAX_PATH];
 	GetModuleFileName(hinst, css, MAX_PATH);
@@ -723,10 +1121,6 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 
 			std::string cachedHtml;
 			if (hasInfo && TryGetCachedHtml(key, cachedHtml)) {
-				char lenMsg[64];
-				sprintf(lenMsg, "HTML length: %zu", cachedHtml.length());
-				DebugLog("main.cpp:browser_show_file", lenMsg, "C");
-
 				browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)cachedHtml.data(), (int)cachedHtml.length());
 				return;
 			}
@@ -745,11 +1139,13 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 			std::string fileStr(filename);
 			std::string cssStr(css);
 			std::string extStr(renderer_extensions);
+			std::string baseHref = BuildBaseHref(browserHost, folderPath);
 
-			std::thread([targetWnd, token, fileStr = std::move(fileStr), cssStr = std::move(cssStr), extStr = std::move(extStr), key = std::move(key), hasInfo]() mutable {
+			std::thread([targetWnd, token, fileStr = std::move(fileStr), cssStr = std::move(cssStr), extStr = std::move(extStr), baseHref = std::move(baseHref), key = std::move(key), hasInfo]() mutable {
 				Markdown md = Markdown();
 				std::string html = md.ConvertToHtmlAscii(fileStr, cssStr, extStr);
-				EnsureBaseTag(html);
+				EnsureBaseTag(html, baseHref);
+				InjectInPageAnchorHandler(html);
 				InjectGoogleTranslateWidget(html);
 				if (hasInfo)
 					PutCachedHtml(key, html);
@@ -773,33 +1169,28 @@ void browser_show_file(CBrowserHost* browserHost, const char* filename, bool use
 
 	Markdown md = Markdown();
 	std::string html = md.ConvertToHtmlAscii(std::string(filename), std::string(css), std::string(renderer_extensions));
-	EnsureBaseTag(html);
+	std::string baseHref = BuildBaseHref(browserHost, folderPath);
+	EnsureBaseTag(html, baseHref);
+	InjectInPageAnchorHandler(html);
 	InjectGoogleTranslateWidget(html);
 
-    char lenMsg[64];
-    sprintf(lenMsg, "HTML length: %zu", html.length());
-    DebugLog("main.cpp:browser_show_file", lenMsg, "C");
-
-	wchar_t tempPath[MAX_PATH];
-	wcscpy(tempPath, folderPath);
-	wcscat(tempPath, L"\\_markdown_preview_temp.html");
-	wcscpy(TempHtmlFilePath, tempPath);
-
-    DebugLogW("main.cpp:browser_show_file", TempHtmlFilePath, "C");
+	if (!BuildSafeTempHtmlPath(TempHtmlFilePath, ARRAYSIZE(TempHtmlFilePath)))
+	{
+		browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.data(), (int)html.size());
+		return;
+	}
 
 	FILE* f = _wfopen(TempHtmlFilePath, L"wb");
 	if (f)
 	{
-		fwrite(html.c_str(), 1, html.length(), f);
+		fwrite(html.data(), 1, html.size(), f);
 		fclose(f);
-        DebugLog("main.cpp:browser_show_file", "File written", "C");
 
         browserHost->Navigate(TempHtmlFilePath);
 	}
 	else
 	{
-        DebugLog("main.cpp:browser_show_file", "Failed to open temp file for writing", "C");
-		browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.c_str(), (int)html.length());
+		browserHost->LoadWebBrowserFromStreamWrapper((const BYTE*)html.data(), (int)html.size());
 	}
 }
 
@@ -885,10 +1276,6 @@ HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 		browser_host->Navigate(url);
 	
 	SetProp(ListWin, PROP_BROWSER, browser_host);
-    
-    char msg[64];
-    sprintf(msg, "Returning ListWin=%p", ListWin);
-    DebugLog("main.cpp:ListLoad", msg, "A,B");
 	
 	if(/*!(options.flags&OPT_KEEPHOOKNOWINDOWS)&&*/hook_keyb==NULL/*&&num_lister_windows==0*/)
 		hook_keyb = SetWindowsHookEx(WH_KEYBOARD, HookKeybProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
@@ -959,7 +1346,6 @@ BOOL APIENTRY DllMain( HANDLE hModule, DWORD  reason_for_call, LPVOID lpReserved
 {
 	if(reason_for_call==DLL_PROCESS_ATTACH)
 	{
-        DebugLog("main.cpp:DllMain", "DLL_PROCESS_ATTACH", "B");
 		hinst = (HINSTANCE)hModule;
 		num_lister_windows = 0;
 		WNDCLASS wc = {	0,//CS_HREDRAW | CS_VREDRAW,
@@ -970,7 +1356,6 @@ BOOL APIENTRY DllMain( HANDLE hModule, DWORD  reason_for_call, LPVOID lpReserved
 	}
 	else if(reason_for_call==DLL_PROCESS_DETACH)
 	{
-        DebugLog("main.cpp:DllMain", "DLL_PROCESS_DETACH", "B");
 		if(hook_keyb)
 			UnhookWindowsHookEx(hook_keyb);
 		if(img_list)

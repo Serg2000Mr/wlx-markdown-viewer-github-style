@@ -14,6 +14,7 @@ A plugin for viewing Markdown files in Total Commander with modern features and 
 - **Task lists** - Interactive checkboxes for task tracking
 - **Code highlighting** - Syntax highlighting for code blocks
 - **Math formulas** - LaTeX-style mathematical expressions
+- **Page translation** - Optional Google Translate-based translation
 
 ## 🚀 Key Advantages
 
@@ -46,11 +47,14 @@ The plugin supports multiple CSS themes:
 Configuration is done through the `MarkdownView.ini` file:
 
 ```ini
-[Settings]
-CssFile=github.css
-EnableMermaid=1
-EnableMath=1
-EnableEmoji=1
+[Renderer]
+CustomCSS=css\github.css
+CustomCSSDark=css\github.dark.css
+
+[Translate]
+Enabled=0
+Auto=0
+Target=auto
 ```
 
 ## 🔍 Zoom Control
@@ -84,9 +88,11 @@ EnableEmoji=1
 
 ### Build Requirements
 
-- Visual Studio 2022 with C++ workload
+- Visual Studio 2022+ with the C++ workload (Desktop development with C++)
 - .NET 8 SDK
 - WebView2 SDK (included via NuGet)
+
+Note: the C++ projects use Platform Toolset `v145`. If you have a different toolset installed, open `MarkdownView.sln` and retarget the projects.
 
 ### Build Process
 
@@ -104,7 +110,7 @@ msbuild MarkdownView.sln /p:Configuration=Release /p:Platform=x64
 
 ## 📋 System Requirements
 
-- Windows 10 version 1903 or later
+- Windows 10 or Windows 11
 - WebView2 Runtime (usually pre-installed on modern Windows)
 - Total Commander 9.0 or later
 

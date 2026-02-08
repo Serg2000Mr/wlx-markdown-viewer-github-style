@@ -27,9 +27,11 @@ This project is a high-performance Markdown viewer plugin (.wlx) for Total Comma
 
 -   **Tool**: `BuildAll.bat`
 -   **Requirements**: 
-    -   Visual Studio 2026 (v145 toolset).
+-    -   Visual Studio 2022+ with the C++ workload (Desktop development with C++).
     -   .NET 8.0 SDK (for AOT compilation).
 -   **Platform**: Currently optimized for **x64**. (Note: .NET 8 Native AOT does not support x86).
+
+Note: the C++ projects use Platform Toolset `v145`. If you have a different toolset installed, open `MarkdownView.sln` and retarget the projects.
 
 ## Key Components
 
@@ -37,6 +39,7 @@ This project is a high-performance Markdown viewer plugin (.wlx) for Total Comma
 -   `Markdown/markdown.cpp`: Handles dynamic loading of the engine and character encoding (UTF-8/UTF-16).
 -   `Build/css/github.css`: A modern GitHub-like style optimized for the IE engine.
 -   `Build/MarkdownView.ini`: Configuration for extensions and Markdig options.
+-   `MarkdownView/main.cpp`: Lister UI logic, toolbar, and optional Google Translate injection.
 
 ## Important for AI Agents
 
@@ -44,4 +47,6 @@ This project is a high-performance Markdown viewer plugin (.wlx) for Total Comma
 -   **Path Resolution**: The bridge DLL (`Markdown-x64.dll`) looks for `MarkdigNative-x64.dll` in the same directory.
 -   **Emoji shortcodes**: GitHub-style `:shortcode:` inside links (e.g. `[:arrow_up:Title](#...)`) is preprocessed in `MarkdigNative/Lib.cs` because Markdig’s emoji parser requires whitespace before the shortcode.
 -   **Performance note**: Avoid per-request WebView2 interception (e.g. global `WebResourceRequested` filters) unless strictly required; it adds noticeable latency for small Markdown files.
+-   **Translate feature**: When enabled, the viewer injects the Google Translate widget into the rendered HTML. Settings are in `[Translate]` (`Enabled`, `Auto`, `Target=auto|en|...`) in `Build/MarkdownView.ini`.
+-   **Translate dependencies**: Translation requires network access to `translate.google.com`. If access is blocked, translation will not work. The implementation may set/clear the `googtrans` cookie to force the target language.
 -   **No CLR**: The C++ projects (`Markdown` and `MarkdownView`) MUST NOT have `/clr` enabled. They are pure native.

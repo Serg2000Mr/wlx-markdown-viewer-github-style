@@ -13,6 +13,7 @@
 - ✅ Интерактивные списки задач с чекбоксами
 - ✅ Подсветка синтаксиса кода
 - ✅ Математические формулы в стиле LaTeX
+- ✅ Опциональный перевод страницы через Google Translate
 
 **Технические преимущества:**
 - 🔥 Без внешних зависимостей - не требует .NET Runtime
@@ -25,7 +26,7 @@
 3. Подтвердите установку плагина
 
 **Системные требования:**
-- Windows 10 версии 1903 или новее
+- Windows 10 или Windows 11
 - WebView2 Runtime (обычно уже установлен)
 - Total Commander 9.0 или новее
 
@@ -44,6 +45,7 @@
 - ✅ Interactive task lists with checkboxes
 - ✅ Code syntax highlighting
 - ✅ LaTeX-style mathematical formulas
+- ✅ Optional page translation via Google Translate
 
 **Technical Advantages:**
 - 🔥 No external dependencies - no .NET Runtime required
@@ -56,7 +58,7 @@
 3. Confirm plugin installation
 
 **System Requirements:**
-- Windows 10 version 1903 or later
+- Windows 10 or Windows 11
 - WebView2 Runtime (usually pre-installed)
 - Total Commander 9.0 or later
 
@@ -82,7 +84,7 @@
 
 ## 🔗 Links / Ссылки
 
-- [Documentation / Документация](README.md)
+- [Documentation / Документация](Readme.md)
 - [English Documentation](README.en.md)
 - [Quick Start Guide / Быстрый старт](QUICK_START.ru.md)
 - [Source Code / Исходный код](https://github.com/Serg2000Mr/wlx-markdown-viewer-github-style)

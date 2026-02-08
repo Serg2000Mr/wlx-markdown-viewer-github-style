@@ -70,6 +70,20 @@ CustomCSSDark=css\github.dark.css ; Темная тема
 - `github.retro.dimmed.css` - ретро приглушенная
 - `air.css`, `modest.css`, `retro.css`, `splendor.css` - альтернативные
 
+## Перевод страницы
+
+В файле `MarkdownView.ini` (секция `[Translate]`):
+
+```ini
+[Translate]
+Enabled=1
+Auto=0
+Target=auto
+```
+
+- `Target=auto` использует язык пользователя Windows как целевой язык перевода.
+- Для работы перевода нужен доступ к `translate.google.com`.
+
 ## Поддержка Markdown
 
 Плагин поддерживает:
@@ -98,7 +112,7 @@ graph TD
 1. **Плагин не устанавливается**: Запустите `BuildAll.bat` от имени администратора
 2. **Стили не применяются**: Проверьте, что папка `css\` скопирована рядом с `.wlx64` файлом
 3. **Диаграммы Mermaid не отображаются**: Убедитесь, что `AllowScripting=1` в `MarkdownView.ini` и есть доступ к интернету для загрузки библиотеки
-4. **Ошибки компиляции**: Убедитесь, что установлены Visual Studio 2026 и .NET 8 SDK
+4. **Ошибки компиляции**: Убедитесь, что установлены Visual Studio 2022+ (компоненты C++), и .NET 8 SDK. Если сборка ругается на `PlatformToolset=v145`, откройте `MarkdownView.sln` и выполните Retarget Projects.
 
 ## Дополнительная информация
 
