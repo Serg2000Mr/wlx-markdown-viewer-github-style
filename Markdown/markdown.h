@@ -7,7 +7,7 @@
 	#define EXPORT __declspec(dllimport)
 	#if _WIN64
 	#pragma comment (lib, "Markdown-x64.lib")
-	#else 
+	#else
 	#pragma comment (lib, "Markdown-x86.lib")
 	#endif
 #endif

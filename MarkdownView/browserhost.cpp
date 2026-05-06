@@ -52,6 +52,7 @@ CBrowserHost::CBrowserHost() :
 	fSearchHighlightMode(1),
 	fStatusBarUnlockTime(0),
 	mIsWebView2Initialized(false),
+	mIsWebView2DocumentReady(false),
 	mIsShuttingDown(false),
 	mZoomFactor(1.0),
 	mScrollTop(0),
@@ -94,7 +95,7 @@ void CBrowserHost::Quit()
 		if(!(options.flags&OPT_MOZILLA))
 			mWebBrowser.Release();
 	}
-    
+
 	mParentWin = NULL;
 	Release();
 }
@@ -110,7 +111,7 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
     // Use AppData\Local for WebView2 user data to avoid permission issues in Program Files
     wchar_t appDataPath[MAX_PATH];
     std::wstring wUserDataPath;
-    
+
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appDataPath))) {
         wUserDataPath = std::wstring(appDataPath) + L"\\TotalCommanderMarkdownViewPlugin\\wv2data";
         CreateDirectoryW((std::wstring(appDataPath) + L"\\TotalCommanderMarkdownViewPlugin").c_str(), NULL);
@@ -123,7 +124,7 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
         CreateDirectoryW((std::wstring(tempPath) + L"TotalCommanderMarkdownViewPlugin").c_str(), NULL);
         CreateDirectoryW(wUserDataPath.c_str(), NULL);
     }
-    
+
 	// Общий обработчик создания Controller — используется и для первого запуска, и для повторного.
 	auto onControllerCreated = [this](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
 		// Если окно уже закрывается, не продолжаем инициализацию/навигацию.
@@ -227,10 +228,15 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 		mWebView->add_NavigationCompleted(
 			Callback<ICoreWebView2NavigationCompletedEventHandler>(
 				[this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
-					BOOL isSuccess;
+					BOOL isSuccess = FALSE;
 					args->get_IsSuccess(&isSuccess);
-					COREWEBVIEW2_WEB_ERROR_STATUS status;
+					COREWEBVIEW2_WEB_ERROR_STATUS status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
 					args->get_WebErrorStatus(&status);
+					mIsWebView2DocumentReady = isSuccess ? true : false;
+					char navMsg[128]{};
+					sprintf_s(navMsg, "success=%d status=%d documentReady=%d",
+						isSuccess ? 1 : 0, (int)status, mIsWebView2DocumentReady ? 1 : 0);
+					DebugLog("issue#9:NavigationCompleted", navMsg);
 					if (options.flags & OPT_SAVEPOS)
 						LoadPosition();
 					ReapplyFastFontIfEnabled();
@@ -277,6 +283,16 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 				settings2->put_UserAgent(
 					L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 			}
+
+			// issue #9: search belongs to WebView2. Let Chromium handle Ctrl+F/F3
+			// while the plugin suppresses only its own Lister hotkey replay.
+			CComQIPtr<ICoreWebView2Settings3> settings3 = settings;
+			if (settings3) {
+				HRESULT hrAccel = settings3->put_AreBrowserAcceleratorKeysEnabled(TRUE);
+				char accelMsg[96]{};
+				sprintf_s(accelMsg, "AreBrowserAcceleratorKeysEnabled(TRUE) hr=0x%08X", (unsigned)hrAccel);
+				DebugLog("issue#9:CreateBrowser", accelMsg);
+			}
 		}
 
 		UpdateFolderMapping(mCurrentFolder);
@@ -301,6 +317,8 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 		mIsWebView2Initialized = true;
 
 		if (mPendingHTML.length() > 0) {
+			mIsWebView2DocumentReady = false;
+			DebugLog("issue#9:CreateBrowser", "NavigateToString pending HTML; documentReady=0");
 			HRESULT hr_nav = mWebView->NavigateToString(mPendingHTML.c_str());
 			mPendingHTML.clear();
 		}
@@ -354,6 +372,8 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 				}
 			}
 
+			mIsWebView2DocumentReady = false;
+			DebugLog("issue#9:CreateBrowser", "Navigate pending URL; documentReady=0");
 			HRESULT hr_nav = mWebView->Navigate(url.c_str());
 			mPendingURL.Empty();
 		}
@@ -611,7 +631,7 @@ void CBrowserHost::Navigate(const wchar_t* url)
 				}
 			}
         }
-        
+
 		mWebView->Navigate(finalUrl.c_str());
 	}
 	else if (mWebBrowser)
@@ -726,6 +746,36 @@ void CBrowserHost::ZoomReset()
 			pCmd->Exec(NULL, OLECMDID_OPTICAL_ZOOM, 0, &vi, NULL);
 		}
 	}
+}
+
+void CBrowserHost::ShowWebFind()
+{
+	DebugLog("issue#9:ShowWebFind", mIsWebView2Initialized ? "begin WebView2" : "fallback non-WebView2");
+
+	if (mIsWebView2Initialized && mWebViewController)
+	{
+		Focus();
+
+		INPUT inputs[4]{};
+		inputs[0].type = INPUT_KEYBOARD;
+		inputs[0].ki.wVk = VK_CONTROL;
+		inputs[1].type = INPUT_KEYBOARD;
+		inputs[1].ki.wVk = 'F';
+		inputs[2].type = INPUT_KEYBOARD;
+		inputs[2].ki.wVk = 'F';
+		inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+		inputs[3].type = INPUT_KEYBOARD;
+		inputs[3].ki.wVk = VK_CONTROL;
+		inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+		UINT sent = SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT));
+		char sendMsg[96]{};
+		sprintf_s(sendMsg, "SendInput Ctrl+F sent=%u expected=%u lastError=%lu",
+			sent, (unsigned)ARRAYSIZE(inputs), GetLastError());
+		DebugLog("issue#9:ShowWebFind", sendMsg);
+		return;
+	}
+
+	FindText(CComBSTR(L""), 0, false);
 }
 
 void CBrowserHost::Focus()
@@ -855,7 +905,7 @@ void CBrowserHost::LoadPosition()
 		return;
 
 	long position = GetPrivateProfileInt("HTML", loc_char, 0, ini_path);
-	
+
 	if (mIsWebView2Initialized && mWebView)
 	{
 		wchar_t script[128];
@@ -961,7 +1011,7 @@ CAtlStringW GetSearchStatusString(int number, bool finished)
 	if(number<0)
 		return CAtlStringW(finished ? L"" : L"Searching...");
 	else if(number==0)
-	{	
+	{
 		if(finished)
 			return CAtlStringW(L"No occurrences have been found");
 		else
@@ -1109,20 +1159,39 @@ void CBrowserHost::SetCurrentSearchHighlight(IHTMLTxtRange* txt_range)
 
 void CBrowserHost::Search(const wchar_t* text, bool forward, bool matchCase, bool wholeWord)
 {
-	if (mIsWebView2Initialized && mWebView)
-	{
-		std::wstring script = L"window.find('";
-		script += text;
-		script += L"', ";
-		script += matchCase ? L"true" : L"false";
-		script += L", ";
-		script += forward ? L"false" : L"true"; // window.find's third param is aBackwards
-		script += L", true, "; // aWrapAround
-		script += wholeWord ? L"true" : L"false";
-		script += L", false, false);";
+	if (!mIsWebView2Initialized || !mWebView || !text)
+		return;
 
-		mWebView->ExecuteScript(script.c_str(), nullptr);
+	std::wstring escaped;
+	escaped.reserve(wcslen(text) + 8);
+	for (const wchar_t* p = text; *p; ++p) {
+		switch (*p) {
+			case L'\\': escaped += L"\\\\"; break;
+			case L'\'': escaped += L"\\'"; break;
+			case L'\n': escaped += L"\\n"; break;
+			case L'\r': escaped += L"\\r"; break;
+			case L'\t': escaped += L"\\t"; break;
+			default:    escaped += *p; break;
+		}
 	}
+
+	std::wstring script;
+	script.reserve(escaped.size() + 128);
+	script += L"window.find('";
+	script += escaped;
+	script += L"',";
+	script += matchCase ? L"true" : L"false";
+	script += L",";
+	script += forward ? L"false" : L"true";
+	script += L",true,";
+	script += wholeWord ? L"true" : L"false";
+	script += L",false,false);";
+
+	char searchMsg[160]{};
+	sprintf_s(searchMsg, "window.find len=%zu forward=%d matchCase=%d wholeWord=%d",
+		wcslen(text), forward ? 1 : 0, matchCase ? 1 : 0, wholeWord ? 1 : 0);
+	DebugLog("issue#9:Search", searchMsg);
+	mWebView->ExecuteScript(script.c_str(), nullptr);
 }
 
 bool CBrowserHost::FindText(CComBSTR search, long search_flags, bool backward)
@@ -1261,7 +1330,7 @@ bool CBrowserHost::FindText(CComBSTR search, long search_flags, bool backward)
 	{
 		mSearchTxtRange.Release();
 		return FindText(search, search_flags, backward);
-	} 
+	}
 	else
 	{
 		if(is_highlight_enabled)
@@ -1401,7 +1470,7 @@ void CBrowserHost::ProcessHotkey(UINT Msg, DWORD Key, DWORD Info)
 		else if(!strnicmp(str_action, "Cmd", 3))
 		{
 			if(!stricmp(str_action, "CmdFind"))
-				FindText(CComBSTR(L""), 0, false); // Or equivalent
+				ShowWebFind();
 			else if(!stricmp(str_action, "CmdPrint"))
 				Print();
 			else if(!stricmp(str_action, "CmdPrintPreview"))
@@ -1472,7 +1541,7 @@ void CBrowserHost::UpdateTitle()
 			atlstr_text.Replace(L"%NAME",name);
 			atlstr_text.Replace(L"%EXT",ext);
 		}
-		
+
 		SetWindowTextW(GetParent(mParentWin),atlstr_text);
 	}
 }
@@ -1491,7 +1560,7 @@ bool CBrowserHost::FormFocused()
 	CComPtr<IHTMLElement> html_elem;
 	html_doc2->get_activeElement(&html_elem);
 	if(!html_elem)
-		return false;	
+		return false;
 	//CComQIPtr<IHTMLDOMNode> html_dom_node(html_elem);
 	//if(!html_dom_node)
 	//	return false;
@@ -1522,7 +1591,7 @@ bool CBrowserHost::FormFocused()
 //---------------------------=|  IUnknown  |=---------------------------
 STDMETHODIMP CBrowserHost::QueryInterface(REFIID riid, void ** ppvObject)
 {
-    if(ppvObject == NULL) 
+    if(ppvObject == NULL)
 		return E_INVALIDARG;
     else if(riid == IID_IUnknown)
         *ppvObject = (IUnknown*)(IDispatch*)this;
@@ -1543,14 +1612,14 @@ STDMETHODIMP CBrowserHost::QueryInterface(REFIID riid, void ** ppvObject)
 		*ppvObject = NULL;
 		return E_NOINTERFACE;
 	}
-    AddRef(); 
+    AddRef();
 	return S_OK;
 }
 
 ULONG STDMETHODCALLTYPE CBrowserHost::AddRef()
-{ 
+{
     ULONG rc = InterlockedIncrement((LONG*)&mRefCount);
-	return rc; 
+	return rc;
 }
 
 ULONG STDMETHODCALLTYPE CBrowserHost::Release()
@@ -1570,9 +1639,9 @@ STDMETHODIMP CBrowserHost::OnShowWindow(BOOL fShow) { return E_NOTIMPL; }
 STDMETHODIMP CBrowserHost::RequestNewObjectLayout() { return E_NOTIMPL; }
 //---------------------------=|  IOleWindow  |=---------------------------
 HRESULT STDMETHODCALLTYPE CBrowserHost::GetWindow(HWND * phwnd)
-{ 
-	*phwnd = mParentWin; 
-	return S_OK; 
+{
+	*phwnd = mParentWin;
+	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE CBrowserHost::ContextSensitiveHelp(BOOL fEnterMode) { return E_NOTIMPL; }
 //---------------------------=|  IOleInPlaceSite  |=---------------------------
@@ -1583,10 +1652,10 @@ HRESULT STDMETHODCALLTYPE CBrowserHost::GetWindowContext(IOleInPlaceFrame **ppFr
                                            IOleInPlaceUIWindow **ppDoc, LPRECT lprcPosRect,
                                            LPRECT lprcClipRect,
                                            LPOLEINPLACEFRAMEINFO lpFrameInfo)
-{ 
+{
 	GetRect(lprcPosRect);
 	GetRect(lprcClipRect);
-	return S_OK; 
+	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE CBrowserHost::Scroll(SIZE scrollExtant) { return E_NOTIMPL; }
 HRESULT STDMETHODCALLTYPE CBrowserHost::OnUIDeactivate(BOOL fUndoable) { return E_NOTIMPL; }
@@ -1645,6 +1714,8 @@ void CBrowserHost::LoadWebBrowserFromStreamWrapper(const BYTE* html, int length)
 
 	if (mIsWebView2Initialized && mWebView)
 	{
+		mIsWebView2DocumentReady = false;
+		DebugLog("issue#9:LoadWebBrowserFromStreamWrapper", "NavigateToString; documentReady=0");
 		mWebView->NavigateToString(ws.c_str());
 	}
 	else if (mWebBrowser)
@@ -1706,6 +1777,8 @@ void CBrowserHost::LoadWebBrowserFromStreamWrapper(const BYTE* html, int length)
 	}
 	else
 	{
+		mIsWebView2DocumentReady = false;
+		DebugLog("issue#9:LoadWebBrowserFromStreamWrapper", "pending HTML; documentReady=0");
 		mPendingHTML = ws;
 		mPendingURL.Empty();
 	}
@@ -1715,7 +1788,7 @@ HRESULT STDMETHODCALLTYPE CBrowserHost::Invoke(DISPID dispIdMember, REFIID riid,
                                                     WORD wFlags, DISPPARAMS FAR* pDispParams,
                                                     VARIANT FAR* pVarResult,
                                                     EXCEPINFO FAR* pExcepInfo,
-                                                    unsigned int FAR* puArgErr) 
+                                                    unsigned int FAR* puArgErr)
 {
 	switch (dispIdMember)
 	{
@@ -1724,14 +1797,14 @@ HRESULT STDMETHODCALLTYPE CBrowserHost::Invoke(DISPID dispIdMember, REFIID riid,
 			if(options.highlight_all_matches)
 				ClearSearchHighlight();
 			mSearchTxtRange.Release();
-			break; 
+			break;
 		case DISPID_DOCUMENTCOMPLETE:
 		case DISPID_NAVIGATECOMPLETE:
 		case DISPID_NAVIGATECOMPLETE2:
 			//mImagesHidden = false;
 		case 0U-726:
 			//ShowWindow(mParentWin,SW_SHOW);
-			if ( mFocusType == fctLister ) 
+			if ( mFocusType == fctLister )
 				Focus();
 			//else if(mFocusType == fctQuickView/* && !::GetFocus()*/)
 			//	::SetFocus(mFocusWin);

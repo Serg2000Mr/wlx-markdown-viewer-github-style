@@ -12,6 +12,7 @@ HINSTANCE hinst = NULL;
 
 SOptions options = {false, 0, 0, 0, 0, 0, "", ""};
 static bool gDebugLogEnabled = false;
+static bool gIssue9DiagnosticLogAlways = true;
 static std::mutex gDebugLogMutex;
 static bool gFallbackLogPathInitialized = false;
 static char gFallbackLogPath[MAX_PATH] = {};
@@ -211,7 +212,9 @@ bool CSmallStringList::check_signature(const char* filename, bool skip_spaces)
 
 void InitOptions()
 {
-	GetModuleFileName(hinst, options.IniFileName, sizeof(options.IniFileName));
+	char modulePath[MAX_PATH]{};
+	GetModuleFileName(hinst, modulePath, ARRAYSIZE(modulePath));
+	StringCchCopyA(options.IniFileName, ARRAYSIZE(options.IniFileName), modulePath);
 	char* dot = strrchr(options.IniFileName, '.');
 	if (dot)
 	{
@@ -301,6 +304,17 @@ void InitOptions()
 	options.valid = true;
 
 	gDebugLogEnabled = GetPrivateProfileInt("Debug", "Log", 0, options.IniFileName) ? true : false;
+
+	char debugInit[1024]{};
+	StringCchPrintfA(
+		debugInit, ARRAYSIZE(debugInit),
+		"module=\"%s\" ini=\"%s\" logIni=\"%s\" Debug.Log=%d",
+		modulePath,
+		options.IniFileName,
+		options.LogIniFileName,
+		gDebugLogEnabled ? 1 : 0
+	);
+	DebugLog("functions.cpp:InitOptions", debugInit);
 }
 
 //						  #-------------#
@@ -414,18 +428,18 @@ CAtlString GetKeyName(WORD key)
 		case VK_OEM_PLUS:	return "+";
 	}
 	UINT lParam = MapVirtualKey(key, 2);
-	if ( (lParam & 0x80000000) == 0 ) 
+	if ( (lParam & 0x80000000) == 0 )
 		return CAtlString((char)lParam);
 	return CAtlString();
 }
 CAtlString GetFullKeyName(WORD key)
 {
 	CAtlString result;
-	if ( GetKeyState(VK_CONTROL) < 0 ) 
+	if ( GetKeyState(VK_CONTROL) < 0 )
 		result += "Ctrl+";
-	if ( GetKeyState(VK_MENU) < 0 ) 
+	if ( GetKeyState(VK_MENU) < 0 )
 		result += "Alt+";
-	if ( GetKeyState(VK_SHIFT) < 0 ) 
+	if ( GetKeyState(VK_SHIFT) < 0 )
 		result += "Shift+";
 	result += GetKeyName(key);
 	return result;
@@ -500,6 +514,13 @@ static void DebugLogAppendLineLocked(const char* line)
 		}
 	}
 	if (!f)
+	{
+		CreateDirectoryA("C:\\tmp", NULL);
+		const char* fixedFallbackPath = "C:\\tmp\\MarkdownViewGitHubStyle_Log.txt";
+		maybeRotate(fixedFallbackPath);
+		f = fopen(fixedFallbackPath, "ab");
+	}
+	if (!f)
 		return;
 	fwrite(line, 1, strlen(line), f);
 	fwrite("\r\n", 1, 2, f);
@@ -508,7 +529,7 @@ static void DebugLogAppendLineLocked(const char* line)
 
 void DebugLog(const char* location, const char* message)
 {
-	if (!gDebugLogEnabled)
+	if (!gDebugLogEnabled && !gIssue9DiagnosticLogAlways)
 		return;
 
 	SYSTEMTIME st{};

@@ -8,6 +8,9 @@ ReleaseWLX/
 x64/
 .vs/
 *.vcxproj.user
+*.csproj.user
+*.pubxml.user
+*.backup
 
 # приватные документы и заметки — не для публичного репо
 AGENTS.md

@@ -34,6 +34,7 @@
 #include "Markdown/markdown.h"
 
 HHOOK hook_keyb = NULL;
+HHOOK hook_getmsg = NULL;
 HIMAGELIST img_list = NULL;
 int num_lister_windows = 0;
 
@@ -62,13 +63,29 @@ namespace {
 	HICON gFastFontIcon = NULL;
 	int gFastFontToolbarImageIndex = -1;
 
-	static void EnsureGdiPlus()
+	// Требует, чтобы вызывающий уже держал gGdiPlusMutex. Используется внутри
+	// LoadTranslateIcon32/LoadFastFontIcon24, которые держат lock на всём периоде
+	// от инициализации GDI+ до использования Gdiplus::Bitmap — иначе возможна
+	// гонка с ShutdownGdiPlusIfIdle при пересечении open/close циклов.
+	static void EnsureGdiPlusLocked()
 	{
-		std::lock_guard<std::mutex> lock(gGdiPlusMutex);
 		if (gGdiPlusToken != 0)
 			return;
 		Gdiplus::GdiplusStartupInput input;
 		Gdiplus::GdiplusStartup(&gGdiPlusToken, &input, NULL);
+	}
+
+	// issue #2: единая точка shutdown GDI+. Безопасно вызывать из любых не-DllMain
+	// мест (UI-поток ListCloseWindow, RAII-guard на ранних возвратах ListLoad).
+	// Закрытие происходит только если GDI+ был стартован и активных Lister-окон нет —
+	// иначе оставляем для других открытых окон.
+	static void ShutdownGdiPlusIfIdle()
+	{
+		std::lock_guard<std::mutex> lock(gGdiPlusMutex);
+		if (gGdiPlusToken != 0 && num_lister_windows == 0) {
+			Gdiplus::GdiplusShutdown(gGdiPlusToken);
+			gGdiPlusToken = 0;
+		}
 	}
 
 	static HICON LoadTranslateIcon32()
@@ -76,7 +93,12 @@ namespace {
 		if (gTranslateIcon)
 			return gTranslateIcon;
 
-		EnsureGdiPlus();
+		// Lock на всём периоде использования GDI+: иначе ShutdownGdiPlusIfIdle()
+		// в параллельном ListCloseWindow может закрыть GDI+ между EnsureGdiPlusLocked
+		// и созданием Gdiplus::Bitmap → undefined behavior внутри декодера.
+		std::lock_guard<std::mutex> lock(gGdiPlusMutex);
+
+		EnsureGdiPlusLocked();
 		if (gGdiPlusToken == 0)
 			return NULL;
 
@@ -130,7 +152,10 @@ namespace {
 		if (gFastFontIcon)
 			return gFastFontIcon;
 
-		EnsureGdiPlus();
+		// См. комментарий в LoadTranslateIcon32 — lock на всё использование GDI+.
+		std::lock_guard<std::mutex> lock(gGdiPlusMutex);
+
+		EnsureGdiPlusLocked();
 		if (gGdiPlusToken == 0)
 			return NULL;
 
@@ -662,7 +687,7 @@ namespace {
 		std::string uiTranslate = EscapeJsSingleQuoted(WideToUtf8(gTranslateUiTranslate));
 		std::string uiBusy = EscapeJsSingleQuoted(WideToUtf8(gTranslateUiBusy));
 		std::string uiOriginal = EscapeJsSingleQuoted(WideToUtf8(gTranslateUiOriginal));
-		
+
 		// Бронебойный CSS: фиксируем body и скрываем все, что похоже на Google Translate
 		std::string headInject = "<style>"
 			"html,body{top:0!important;margin-top:0!important;position:relative!important;}"
@@ -874,6 +899,214 @@ namespace {
 			".t{font-size:12px;opacity:.8}</style></head>"
 			"<body><div class='t'>Rendering...</div></body></html>";
 	}
+
+	static bool IsWebViewSearchHotkey(const CAtlString& keyName)
+	{
+		return keyName == "Ctrl+F" || keyName == "F3" || keyName == "Shift+F3";
+	}
+
+	static bool IsIssue9Key(WPARAM key)
+	{
+		return key == VK_CONTROL || key == 'F' || key == VK_F3;
+	}
+
+	static bool IsIssue9KeyMessage(UINT message)
+	{
+		return message == WM_KEYDOWN || message == WM_KEYUP ||
+			message == WM_SYSKEYDOWN || message == WM_SYSKEYUP;
+	}
+
+	static const char* MessageName(UINT message)
+	{
+		switch (message)
+		{
+			case WM_KEYDOWN: return "WM_KEYDOWN";
+			case WM_KEYUP: return "WM_KEYUP";
+			case WM_SYSKEYDOWN: return "WM_SYSKEYDOWN";
+			case WM_SYSKEYUP: return "WM_SYSKEYUP";
+			case WM_IEVIEW_HOTKEY: return "WM_IEVIEW_HOTKEY";
+			default: return "MSG";
+		}
+	}
+
+	static void BuildWindowBrief(HWND hwnd, char* out, size_t cchOut)
+	{
+		if (!out || cchOut == 0)
+			return;
+		out[0] = '\0';
+		if (!hwnd)
+		{
+			StringCchCopyA(out, cchOut, "NULL");
+			return;
+		}
+
+		char cls[96]{};
+		char title[128]{};
+		GetClassNameA(hwnd, cls, ARRAYSIZE(cls));
+		GetWindowTextA(hwnd, title, ARRAYSIZE(title));
+		StringCchPrintfA(out, cchOut,
+			"%p cls='%s' title='%.60s' parent=%p root=%p owner=%p visible=%d enabled=%d",
+			hwnd, cls, title, GetParent(hwnd), GetAncestor(hwnd, GA_ROOT),
+			GetWindow(hwnd, GW_OWNER), IsWindowVisible(hwnd) ? 1 : 0, IsWindowEnabled(hwnd) ? 1 : 0);
+	}
+
+	static void DebugLogWindowBrief(const char* location, const char* label, HWND hwnd)
+	{
+		char brief[512]{};
+		char line[640]{};
+		BuildWindowBrief(hwnd, brief, ARRAYSIZE(brief));
+		StringCchPrintfA(line, ARRAYSIZE(line), "%s=%s", label ? label : "hwnd", brief);
+		DebugLog(location, line);
+	}
+
+	static HWND gLastHotkeyBrowserWnd = NULL;
+	static ULONGLONG gNativeWebFindAcceleratorUntil = 0;
+	static const char* PROP_PENDING_WEB_FIND = "HTMLView_PendingWebFind";
+	static const char* PROP_PENDING_WEB_FIND_DEADLINE = "HTMLView_PendingWebFindDeadline";
+	static const UINT_PTR TIMER_PENDING_WEB_FIND = 0x4F39;
+	static const UINT PENDING_WEB_FIND_RETRY_MS = 50;
+	static const DWORD PENDING_WEB_FIND_TIMEOUT_MS = 10000;
+
+	static bool IsNativeWebFindAcceleratorInProgress()
+	{
+		return gNativeWebFindAcceleratorUntil && GetTickCount64() < gNativeWebFindAcceleratorUntil;
+	}
+
+	static void ArmNativeWebFindAcceleratorGuard()
+	{
+		gNativeWebFindAcceleratorUntil = GetTickCount64() + 1200;
+	}
+
+	static bool HasTickPassed(DWORD deadline)
+	{
+		return (LONG)(GetTickCount() - deadline) >= 0;
+	}
+
+	static bool AreWebFindTriggerKeysReleased()
+	{
+		return (GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0 &&
+			(GetAsyncKeyState('F') & 0x8000) == 0;
+	}
+
+	static void ClearPendingWebFind(HWND hWnd)
+	{
+		if (!hWnd)
+			return;
+		KillTimer(hWnd, TIMER_PENDING_WEB_FIND);
+		RemoveProp(hWnd, PROP_PENDING_WEB_FIND);
+		RemoveProp(hWnd, PROP_PENDING_WEB_FIND_DEADLINE);
+	}
+
+	static void ArmPendingWebFind(HWND hWnd)
+	{
+		if (!hWnd)
+			return;
+
+		SetProp(hWnd, PROP_PENDING_WEB_FIND, (HANDLE)1);
+		SetProp(hWnd, PROP_PENDING_WEB_FIND_DEADLINE,
+			(HANDLE)(UINT_PTR)(GetTickCount() + PENDING_WEB_FIND_TIMEOUT_MS));
+		SetTimer(hWnd, TIMER_PENDING_WEB_FIND, PENDING_WEB_FIND_RETRY_MS, NULL);
+		DebugLog("issue#9:PendingWebFind", "armed pending Ctrl+F until WebView2 document ready");
+	}
+
+	static bool RunPendingWebFindIfReady(HWND hWnd)
+	{
+		if (!hWnd || !GetProp(hWnd, PROP_PENDING_WEB_FIND))
+			return false;
+
+		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd, PROP_BROWSER);
+		if (!browser_host)
+		{
+			DebugLog("issue#9:PendingWebFind", "cancel pending Ctrl+F: browser host is gone");
+			ClearPendingWebFind(hWnd);
+			return true;
+		}
+
+		if (browser_host->mIsWebView2Initialized && browser_host->mIsWebView2DocumentReady && browser_host->mWebViewController)
+		{
+			if (!AreWebFindTriggerKeysReleased())
+			{
+				DebugLog("issue#9:PendingWebFind", "waiting trigger keys release before ShowWebFind");
+				return false;
+			}
+
+			DebugLog("issue#9:PendingWebFind", "WebView2 document ready -> ShowWebFind");
+			ClearPendingWebFind(hWnd);
+			ArmNativeWebFindAcceleratorGuard();
+			browser_host->ShowWebFind();
+			return true;
+		}
+
+		DWORD deadline = (DWORD)(UINT_PTR)GetProp(hWnd, PROP_PENDING_WEB_FIND_DEADLINE);
+		if (!deadline || HasTickPassed(deadline))
+		{
+			char buf[160]{};
+			sprintf_s(buf, "timeout waiting WebView2 hwnd=%p webView2=%d documentReady=%d controller=%p",
+				hWnd, browser_host->mIsWebView2Initialized ? 1 : 0,
+				browser_host->mIsWebView2DocumentReady ? 1 : 0, browser_host->mWebViewController.p);
+			DebugLog("issue#9:PendingWebFind", buf);
+			ClearPendingWebFind(hWnd);
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool IsWindowInRoot(HWND root, HWND hwnd)
+	{
+		return hwnd && root && (hwnd == root || IsChild(root, hwnd) || GetAncestor(hwnd, GA_ROOT) == root);
+	}
+
+	static HWND GetFallbackHotkeyBrowserWnd()
+	{
+		if (!gLastHotkeyBrowserWnd || !IsWindow(gLastHotkeyBrowserWnd) || !GetProp(gLastHotkeyBrowserWnd, PROP_BROWSER))
+			return NULL;
+
+		HWND root = GetAncestor(gLastHotkeyBrowserWnd, GA_ROOT);
+		HWND foreground = GetForegroundWindow();
+		HWND active = GetActiveWindow();
+		if (IsWindowInRoot(root, foreground) || IsWindowInRoot(root, active))
+			return gLastHotkeyBrowserWnd;
+
+		return NULL;
+	}
+
+	static bool ShouldSuppressListerSearchHotkey(MSG* msg, HWND* BrowserWnd)
+	{
+		if (BrowserWnd)
+			*BrowserWnd = NULL;
+		if (!msg || !IsIssue9KeyMessage(msg->message) || !IsIssue9Key(msg->wParam))
+			return false;
+
+		CAtlString key_name = GetFullKeyName((WORD)msg->wParam);
+		if (!IsWebViewSearchHotkey(key_name))
+			return false;
+
+		HWND browserFromMsg = GetBrowserHostWnd(msg->hwnd);
+		if (browserFromMsg)
+		{
+			gLastHotkeyBrowserWnd = browserFromMsg;
+			return false;
+		}
+
+		HWND focus = GetFocus();
+		HWND browserFromFocus = GetBrowserHostWnd(focus);
+		HWND browserWnd = browserFromFocus ? browserFromFocus : GetFallbackHotkeyBrowserWnd();
+		if (!browserWnd)
+			return false;
+
+		HWND browserRoot = GetAncestor(browserWnd, GA_ROOT);
+		if (!IsWindowInRoot(browserRoot, msg->hwnd))
+			return false;
+
+		CBrowserHost* browser_host = (CBrowserHost*)GetProp(browserWnd, PROP_BROWSER);
+		if (!browser_host)
+			return false;
+
+		if (BrowserWnd)
+			*BrowserWnd = browserWnd;
+		return true;
+	}
 }
 
 void RefreshBrowser();
@@ -889,21 +1122,95 @@ void StoreRefreshParams(const char* FileToLoad, HWND ParentWin, int ShowFlags)
 
 LRESULT CALLBACK HookKeybProc(int nCode,WPARAM wParam,LPARAM lParam)
 {
-	if (nCode<0/* || dbg_DontExecHook*/) 
+	if (nCode<0/* || dbg_DontExecHook*/)
 		return CallNextHookEx(hook_keyb, nCode, wParam, lParam);
-	HWND BrowserWnd=GetBrowserHostWnd(GetFocus());
+	HWND focus = GetFocus();
+	HWND directBrowserWnd = GetBrowserHostWnd(focus);
+	HWND fallbackBrowserWnd = NULL;
+	HWND BrowserWnd = directBrowserWnd;
+	if (directBrowserWnd)
+		gLastHotkeyBrowserWnd = directBrowserWnd;
+	else
+	{
+		fallbackBrowserWnd = GetFallbackHotkeyBrowserWnd();
+		BrowserWnd = fallbackBrowserWnd;
+	}
+	// issue #9 diagnostics: keep this path visible in logs
+	{
+		bool key_down = (lParam & 0x80000000) == 0;
+		bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		char buf[320];
+		sprintf_s(buf, "nCode=%d vKey=0x%X(%c) lParam=0x%lX down=%d ctrl=%d focus=%p direct=%p fallback=%p browserWnd=%p last=%p fg=%p active=%p",
+			nCode, (unsigned)wParam, (wParam>=0x20 && wParam<0x7F) ? (char)wParam : '?',
+			(unsigned long)lParam, key_down ? 1 : 0, ctrl ? 1 : 0, focus,
+			directBrowserWnd, fallbackBrowserWnd, BrowserWnd, gLastHotkeyBrowserWnd,
+			GetForegroundWindow(), GetActiveWindow());
+		DebugLog("issue#9:HookKeybProc", buf);
+		if (IsIssue9Key(wParam))
+		{
+			DebugLogWindowBrief("issue#9:HookKeybProc", "focus", focus);
+			DebugLogWindowBrief("issue#9:HookKeybProc", "foreground", GetForegroundWindow());
+			DebugLogWindowBrief("issue#9:HookKeybProc", "active", GetActiveWindow());
+			DebugLogWindowBrief("issue#9:HookKeybProc", "directBrowserWnd", directBrowserWnd);
+			DebugLogWindowBrief("issue#9:HookKeybProc", "fallbackBrowserWnd", fallbackBrowserWnd);
+			DebugLogWindowBrief("issue#9:HookKeybProc", "lastBrowserWnd", gLastHotkeyBrowserWnd);
+		}
+	}
 	if(BrowserWnd)
+	{
+		DebugLog("issue#9:HookKeybProc", "SendMessage WM_IEVIEW_HOTKEY begin");
 		SendMessage(BrowserWnd,WM_IEVIEW_HOTKEY,wParam,lParam);
+		DebugLog("issue#9:HookKeybProc", "SendMessage WM_IEVIEW_HOTKEY end");
+	}
 	return CallNextHookEx(hook_keyb, nCode, wParam, lParam);
+}
+
+LRESULT CALLBACK HookGetMsgProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+	if (nCode >= 0 && lParam)
+	{
+		MSG* msg = (MSG*)lParam;
+		if (msg && IsIssue9KeyMessage(msg->message) && IsIssue9Key(msg->wParam))
+		{
+			CAtlString key_name = GetFullKeyName((WORD)msg->wParam);
+			char buf[320]{};
+			sprintf_s(buf, "%s remove=%lu hwnd=%p vKey=0x%X key='%s' lParam=0x%lX focus=%p browserFromMsg=%p fg=%p active=%p",
+				MessageName(msg->message), (unsigned long)wParam, msg->hwnd,
+				(unsigned)msg->wParam, (const char*)key_name, (unsigned long)msg->lParam,
+				GetFocus(), GetBrowserHostWnd(msg->hwnd), GetForegroundWindow(), GetActiveWindow());
+			DebugLog("issue#9:HookGetMsgProc", buf);
+			DebugLogWindowBrief("issue#9:HookGetMsgProc", "msg.hwnd", msg->hwnd);
+			DebugLogWindowBrief("issue#9:HookGetMsgProc", "focus", GetFocus());
+			DebugLogWindowBrief("issue#9:HookGetMsgProc", "foreground", GetForegroundWindow());
+			DebugLogWindowBrief("issue#9:HookGetMsgProc", "active", GetActiveWindow());
+			DebugLogWindowBrief("issue#9:HookGetMsgProc", "lastBrowserWnd", gLastHotkeyBrowserWnd);
+		}
+
+		HWND suppressedForBrowser = NULL;
+		if (ShouldSuppressListerSearchHotkey(msg, &suppressedForBrowser))
+		{
+			char suppressBuf[240]{};
+			CAtlString key_name = GetFullKeyName((WORD)msg->wParam);
+			sprintf_s(suppressBuf, "suppress duplicate Lister search hotkey %s key='%s' hwnd=%p browser=%p",
+				MessageName(msg->message), (const char*)key_name, msg->hwnd, suppressedForBrowser);
+			DebugLog("issue#9:HookGetMsgProc", suppressBuf);
+			msg->message = WM_NULL;
+			msg->wParam = 0;
+			msg->lParam = 0;
+		}
+	}
+	return CallNextHookEx(hook_getmsg, nCode, wParam, lParam);
 }
 
 void InitProc()
 {
 	if(!options.valid)
 		InitOptions();
-	
+
 	if(!hook_keyb&&(options.flags&OPT_KEEPHOOKNOWINDOWS))
 		hook_keyb = SetWindowsHookEx(WH_KEYBOARD, HookKeybProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
+	if(!hook_getmsg&&(options.flags&OPT_KEEPHOOKNOWINDOWS))
+		hook_getmsg = SetWindowsHookEx(WH_GETMESSAGE, HookGetMsgProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
 	if(!img_list)
 	{
 		unsigned char toolbar_bpp = (options.toolbar>>2)&3;
@@ -914,7 +1221,7 @@ void InitProc()
 		else
 			img_list = ImageList_LoadImage(hinst, MAKEINTRESOURCE(IDB_BITMAP1), 24, 0, CLR_DEFAULT, IMAGE_BITMAP, LR_CREATEDIBSECTION);
 	}
-	
+
 	if(!markdown_extensions.valid())
 		markdown_extensions.load_from_ini(options.IniFileName, "Extensions", "MarkdownExtensions");
 	if(!html_extensions.valid())
@@ -925,7 +1232,7 @@ void InitProc()
 		typing_trans_hotkeys.load_from_ini(options.IniFileName, "Hotkeys", "TypingTranslationHotkeys");
 	if(!trans_hotkeys.valid())
 		trans_hotkeys.load_from_ini(options.IniFileName, "Hotkeys", "TranslationHotkeys");
-	
+
 	GetPrivateProfileString("Renderer", "Extensions", "", &renderer_extensions[0], 2048, options.IniFileName);
 	GetPrivateProfileString("Renderer", "CustomCSS", "", &html_template[0], 512, options.IniFileName);
 	GetPrivateProfileString("Renderer", "CustomCSSDark", "", &html_template_dark[0], 512, options.IniFileName);
@@ -956,6 +1263,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	}
 	else if(message==WM_DESTROY && !(options.flags&OPT_QUICKQIUT))
 	{
+		ClearPendingWebFind(hWnd);
 		HWND status = (HWND)GetProp(hWnd, PROP_STATUS);
 		HWND toolbar = (HWND)GetProp(hWnd, PROP_TOOLBAR);
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd,PROP_BROWSER);
@@ -977,6 +1285,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				browser_host->SavePosition();
 			browser_host->Quit();
 		}
+	}
+	else if(message==WM_TIMER && wParam==TIMER_PENDING_WEB_FIND)
+	{
+		RunPendingWebFindIfReady(hWnd);
+		return 0;
 	}
 	else if(message==WM_SIZE)
 	{
@@ -1086,7 +1399,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				{
 					if(browser_host->mFocusType==fctQuickView)
 						SetFocus(hWnd);
-					SendMessage(hWnd, WM_KEYDOWN, VK_F3, 0);
+					DebugLog("issue#9:TBB_SEARCH", "toolbar search -> ShowWebFind");
+					browser_host->ShowWebFind();
 				}
 				break;
 			case TBB_TRANSLATE:
@@ -1128,6 +1442,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	}
 	else if(message==WM_IEVIEW_SEARCH||message==WM_IEVIEW_SEARCHW)
 	{
+		// issue #9 diagnostics: keep this path visible in logs
+		{
+			char buf[160];
+			if (message == WM_IEVIEW_SEARCH)
+				sprintf_s(buf, "WM_IEVIEW_SEARCH (ANSI) text='%s' lParam=0x%lX",
+					wParam ? (const char*)wParam : "(null)", (unsigned long)lParam);
+			else
+				sprintf_s(buf, "WM_IEVIEW_SEARCHW (Wide) lParam=0x%lX", (unsigned long)lParam);
+			DebugLog("issue#9:WM_IEVIEW_SEARCH", buf);
+		}
+
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd ,PROP_BROWSER);
 		if(browser_host)
 		{
@@ -1155,7 +1480,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	else if(message==WM_IEVIEW_COMMAND)
 	{
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd,PROP_BROWSER);
-		if ( browser_host ) 
+		if ( browser_host )
 		{
 			if (browser_host->mIsWebView2Initialized && browser_host->mWebView)
 			{
@@ -1167,7 +1492,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			else if (browser_host->mWebBrowser)
 			{
 				CComQIPtr<IOleCommandTarget, &IID_IOleCommandTarget> pCmd = browser_host->mWebBrowser;
-				if ( pCmd ) 
+				if ( pCmd )
 				{
 					if(wParam==lc_selectall)
 						pCmd->Exec(NULL, OLECMDID_SELECTALL, OLECMDEXECOPT_DODEFAULT, NULL,NULL);
@@ -1177,25 +1502,90 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 		}
 	}
+	else if(IsIssue9KeyMessage(message) && IsIssue9Key(wParam))
+	{
+		CAtlString key_name = GetFullKeyName((WORD)wParam);
+		char buf[320]{};
+		sprintf_s(buf, "%s hwnd=%p vKey=0x%X key='%s' lParam=0x%lX focus=%p fg=%p active=%p",
+			MessageName(message), hWnd, (unsigned)wParam, (const char*)key_name,
+			(unsigned long)lParam, GetFocus(), GetForegroundWindow(), GetActiveWindow());
+		DebugLog("issue#9:WndProcKey", buf);
+		DebugLogWindowBrief("issue#9:WndProcKey", "hWnd", hWnd);
+		DebugLogWindowBrief("issue#9:WndProcKey", "parent", GetParent(hWnd));
+		DebugLogWindowBrief("issue#9:WndProcKey", "focus", GetFocus());
+	}
 	else if(message==WM_IEVIEW_HOTKEY)
 	{
+		// issue #9 diagnostics: keep this path visible in logs
+		{
+			char buf[120];
+			sprintf_s(buf, "vKey=0x%X(%c) lParam=0x%lX",
+				(unsigned)wParam, (wParam>=0x20 && wParam<0x7F) ? (char)wParam : '?',
+				(unsigned long)lParam);
+			DebugLog("issue#9:WM_IEVIEW_HOTKEY", buf);
+		}
+
 		CBrowserHost* browser_host = (CBrowserHost*)GetProp(hWnd,PROP_BROWSER);
-		if ( browser_host ) 
+		if ( browser_host )
 		{
 			bool alt_down = 0x20000000&lParam;
 			bool key_down = 0x80000000&lParam;
 			UINT Msg = key_down?(alt_down?WM_SYSKEYUP:WM_KEYUP):(alt_down?WM_SYSKEYDOWN:WM_KEYDOWN);
 			CAtlString key_name = GetFullKeyName((WORD)wParam);
+			bool formFocused = browser_host->FormFocused();
+			char stateBuf[360]{};
+			bool webViewSearchHotkey = IsWebViewSearchHotkey(key_name);
+			bool webViewSearchKey = browser_host->mIsWebView2Initialized && browser_host->mIsWebView2DocumentReady && webViewSearchHotkey;
+			sprintf_s(stateBuf, "%s key='%s' translatedMsg=%s webView2=%d documentReady=%d webSearchKey=%d formFocused=%d capture=%p parent=%p focus=%p fg=%p active=%p",
+				MessageName(message), (const char*)key_name, MessageName(Msg),
+				browser_host->mIsWebView2Initialized ? 1 : 0,
+				browser_host->mIsWebView2DocumentReady ? 1 : 0,
+				webViewSearchKey ? 1 : 0,
+				formFocused ? 1 : 0, GetCapture(), GetParent(hWnd), GetFocus(), GetForegroundWindow(), GetActiveWindow());
+			DebugLog("issue#9:WM_IEVIEW_HOTKEY", stateBuf);
+			DebugLogWindowBrief("issue#9:WM_IEVIEW_HOTKEY", "hWnd", hWnd);
+			DebugLogWindowBrief("issue#9:WM_IEVIEW_HOTKEY", "parent", GetParent(hWnd));
 			if(key_name=="Ctrl+Insert")
 				SendMessage(hWnd, WM_IEVIEW_COMMAND, lc_copy, 0);
-			if(browser_host->FormFocused())
+			if(webViewSearchHotkey && (!browser_host->mIsWebView2Initialized || !browser_host->mIsWebView2DocumentReady))
 			{
-				if(typing_trans_hotkeys.find(key_name)&&!GetCapture()) 
+				if (Msg == WM_KEYDOWN && key_name == "Ctrl+F")
+				{
+					DebugLog("issue#9:WM_IEVIEW_HOTKEY", browser_host->mIsWebView2Initialized ?
+						"Ctrl+F deferred until WebView2 document ready" :
+						"Ctrl+F deferred until WebView2 initialization");
+					ArmPendingWebFind(hWnd);
+				}
+				else
+				{
+					DebugLog("issue#9:WM_IEVIEW_HOTKEY", "skip plugin replay; search hotkey before WebView2 initialization");
+				}
+				return 0;
+			}
+			if(webViewSearchKey)
+			{
+				if (IsNativeWebFindAcceleratorInProgress())
+				{
+					DebugLog("issue#9:WM_IEVIEW_HOTKEY", "skip plugin replay; native WebView2 find accelerator is in progress");
+					return 0;
+				}
+				if (Msg == WM_KEYDOWN && key_name == "Ctrl+F")
+				{
+					DebugLog("issue#9:WM_IEVIEW_HOTKEY", "Ctrl+F queued until WebView2 document ready and trigger keys released");
+					ArmPendingWebFind(hWnd);
+					return 0;
+				}
+				DebugLog("issue#9:WM_IEVIEW_HOTKEY", "skip plugin replay; WebView2 owns F3/Shift+F3 search");
+				return 0;
+			}
+			if(formFocused)
+			{
+				if(typing_trans_hotkeys.find(key_name)&&!GetCapture())
 					SendMessage(hWnd, Msg, wParam, lParam);
 			}
 			else
 			{
-				if(trans_hotkeys.find(key_name)&&!GetCapture()) 
+				if(trans_hotkeys.find(key_name)&&!GetCapture())
 					SendMessage(hWnd, Msg, wParam, lParam);
 			}
 			browser_host->ProcessHotkey(Msg, (DWORD)(UINT_PTR)wParam, (DWORD)(ULONG_PTR)lParam);
@@ -1271,9 +1661,9 @@ HWND Create_Toolbar(HWND ListWin)
 	if (!gFastFontButtonEnabled)
 		tb_buttons[11].fsState = tb_buttons[12].fsState = TBSTATE_HIDDEN;
 
-	HWND toolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD | WS_CLIPSIBLINGS | CCS_TOP | CCS_NODIVIDER | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS, 0, 0, 0, 0, ListWin, NULL, hinst, NULL); 
+	HWND toolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, WS_CHILD | WS_CLIPSIBLINGS | CCS_TOP | CCS_NODIVIDER | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS, 0, 0, 0, 0, ListWin, NULL, hinst, NULL);
 	SetProp(ListWin, PROP_TOOLBAR, toolbar);
-	SendMessage(toolbar, TB_BUTTONSTRUCTSIZE, (WPARAM) sizeof(TBBUTTON), 0); 
+	SendMessage(toolbar, TB_BUTTONSTRUCTSIZE, (WPARAM) sizeof(TBBUTTON), 0);
 	SendMessage(toolbar, TB_SETIMAGELIST, 0, (LPARAM)img_list);
 	SendMessage(toolbar, TB_SETUNICODEFORMAT, TRUE, 0);
 	SendMessage(toolbar, TB_SETPADDING, 0, MAKELPARAM(0, 0));
@@ -1340,8 +1730,8 @@ void prepare_browser(CBrowserHost* browser_host)
 {
 	browser_host->Navigate(L"about:blank");
 
-	// for WebView2 we don't need to wait for about:blank usually, 
-	// but for IE we do. 
+	// for WebView2 we don't need to wait for about:blank usually,
+	// but for IE we do.
 	if (browser_host->mWebBrowser) {
 		READYSTATE rs;
 		do
@@ -1542,9 +1932,9 @@ int __stdcall ListLoadNext(HWND ParentWin, HWND PluginWin, char* FileToLoad, int
 	CBrowserHost* browser_host = (CBrowserHost*)GetProp(PluginWin, PROP_BROWSER);
 	if(!browser_host)
 		return LISTPLUGIN_ERROR;
-	
+
 	StoreRefreshParams(FileToLoad, ParentWin, ShowFlags);
-	
+
 	if (is_markdown(FileToLoad))
 		browser_show_file(browser_host, FileToLoad, ShowFlags & lcp_darkmode);
 	else
@@ -1560,6 +1950,26 @@ HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 	DebugLog("main.cpp:ListLoad", msgFlags);
 	HRESULT hrOle = OleInitialize(NULL);
 	InitProc();
+
+	// RAII-guard: на любом раннем выходе из ListLoad без передачи владения окном
+	// в ListCloseWindow вызывается OleUninitialize. Иначе на каждый неудачный
+	// ListLoad утекала OLE-инициализация (и удерживались COM proxy DLL).
+	struct OleGuard {
+		bool dismissed = false;
+		~OleGuard() { if (!dismissed) OleUninitialize(); }
+	} oleGuard;
+
+	// RAII-guard: InitProc() выше может загрузить PNG-иконки тулбара через
+	// LoadTranslateIcon32/LoadFastFontIcon24, что стартует GDI+ ещё до того,
+	// как окно принято Total Commander. Если ListLoad вернёт NULL на ранней
+	// проверке, ListCloseWindow для этого случая не вызовется и GDI+ останется
+	// инициализированным до выгрузки DLL — нарушая парность Startup/Shutdown.
+	// На неуспешных путях RAII вызывает ShutdownGdiPlusIfIdle (он закроет GDI+
+	// только если других Lister-окон не осталось).
+	struct GdiPlusGuard {
+		bool dismissed = false;
+		~GdiPlusGuard() { if (!dismissed) ShutdownGdiPlusIfIdle(); }
+	} gdiPlusGuard;
 
 	if (!FileToLoad || !FileToLoad[0])
 		return NULL;
@@ -1579,22 +1989,22 @@ HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 	bool qiuck_view = WS_CHILD&GetWindowLong(ParentWin, GWL_STYLE);
 	bool need_toolbar = (!qiuck_view&&(options.toolbar&1))||(qiuck_view&&(options.toolbar&2));
 	bool need_statusbar = (!qiuck_view&&(options.status&1))||(qiuck_view&&(options.status&2));
-	
+
 	ListWin = CreateWindow(MAIN_WINDOW_CLASS, "IEViewMainWindow", WS_VISIBLE | WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, Rect.right, Rect.bottom, ParentWin, NULL, hinst, NULL);
 	if(!ListWin)
 		return NULL;
 	if( need_statusbar )
 		status = CreateStatusWindow(WS_CHILD|WS_VISIBLE,"",ListWin,0);
-	else 
+	else
 		status = NULL;
 	SetProp(ListWin, PROP_STATUS, status);
 	if( need_toolbar )
 		toolbar = Create_Toolbar(ListWin);
-	else 
+	else
 		toolbar = NULL;
 	SetProp(ListWin, PROP_TOOLBAR, toolbar);
 	browser_host = new CBrowserHost;
-	
+
 	browser_host->mFocusType = qiuck_view?fctQuickView:fctLister;
 	if(!browser_host->CreateBrowser(ListWin))
 	{
@@ -1609,13 +2019,19 @@ HWND __stdcall ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
 		browser_show_file(browser_host, FileToLoad, ShowFlags & lcp_darkmode);
 	else
 		browser_host->Navigate(url);
-	
+
 	SetProp(ListWin, PROP_BROWSER, browser_host);
-	
+
 	if(/*!(options.flags&OPT_KEEPHOOKNOWINDOWS)&&*/hook_keyb==NULL/*&&num_lister_windows==0*/)
 		hook_keyb = SetWindowsHookEx(WH_KEYBOARD, HookKeybProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
+	if(hook_getmsg==NULL)
+		hook_getmsg = SetWindowsHookEx(WH_GETMESSAGE, HookGetMsgProc, hinst, (options.flags&OPT_GLOBALHOOK)?0:GetCurrentThreadId());
 	++num_lister_windows;
 
+	// Окно создано и принимается Total Commander — владение OLE-инициализацией
+	// и GDI+ (через num_lister_windows-счётчик) переходит в ListCloseWindow.
+	oleGuard.dismissed = true;
+	gdiPlusGuard.dismissed = true;
 	return ListWin;
 }
 
@@ -1636,12 +2052,31 @@ int __stdcall ListSendCommand(HWND ListWin,int Command,int Parameter)
 
 int _stdcall ListSearchText(HWND ListWin, char* SearchString, int SearchParameter)
 {
+	// issue #9 diagnostics: keep this path visible in logs
+	{
+		char buf[160];
+		sprintf_s(buf, "ListWin=%p text='%s' param=0x%X",
+			ListWin, SearchString ? SearchString : "(null)", (unsigned)SearchParameter);
+		DebugLog("issue#9:ListSearchText", buf);
+		DebugLogWindowBrief("issue#9:ListSearchText", "ListWin", ListWin);
+		DebugLogWindowBrief("issue#9:ListSearchText", "parent", GetParent(ListWin));
+		DebugLogWindowBrief("issue#9:ListSearchText", "focus", GetFocus());
+	}
 	SendMessage(ListWin, WM_IEVIEW_SEARCH, (WPARAM)SearchString, SearchParameter);
 	return LISTPLUGIN_OK;
 }
 
 int _stdcall ListSearchTextW(HWND ListWin, WCHAR* SearchString, int SearchParameter)
 {
+	// issue #9 diagnostics: keep this path visible in logs
+	{
+		char buf[160];
+		sprintf_s(buf, "ListWin=%p param=0x%X (Wide-mode)", ListWin, (unsigned)SearchParameter);
+		DebugLog("issue#9:ListSearchTextW", buf);
+		DebugLogWindowBrief("issue#9:ListSearchTextW", "ListWin", ListWin);
+		DebugLogWindowBrief("issue#9:ListSearchTextW", "parent", GetParent(ListWin));
+		DebugLogWindowBrief("issue#9:ListSearchTextW", "focus", GetFocus());
+	}
 	SendMessage(ListWin, WM_IEVIEW_SEARCHW, (WPARAM)SearchString, SearchParameter);
 	return LISTPLUGIN_OK;
 }
@@ -1656,6 +2091,12 @@ void __stdcall ListCloseWindow(HWND ListWin)
 	// что приводит к падению Total Commander при закрытии процесса.
 	if (num_lister_windows == 0) {
 		CBrowserHost::sSharedEnvironment.Release();
+
+		// issue #2: GdiplusShutdown — здесь, не в DllMain. Microsoft запрещает вызывать
+		// GdiplusShutdown под loader lock (gdiplus.h doc): GdiPlus ждёт завершения своих
+		// worker-threads, которые под loader lock завершиться не могут → cm_UnloadPlugins
+		// вешает Total Commander.
+		ShutdownGdiPlusIfIdle();
 	}
 
 	OleUninitialize();
@@ -1667,6 +2108,11 @@ void __stdcall ListCloseWindow(HWND ListWin)
 	{
 		UnhookWindowsHookEx(hook_keyb);
 		hook_keyb = NULL;
+	}
+	if(!(options.flags&OPT_KEEPHOOKNOWINDOWS)&&hook_getmsg&&num_lister_windows==0)
+	{
+		UnhookWindowsHookEx(hook_getmsg);
+		hook_getmsg = NULL;
 	}
 	return;
 }
@@ -1691,8 +2137,14 @@ BOOL APIENTRY DllMain( HANDLE hModule, DWORD  reason_for_call, LPVOID lpReserved
 	}
 	else if(reason_for_call==DLL_PROCESS_DETACH)
 	{
+		// issue #2: GdiplusShutdown НЕ вызывается отсюда — он перенесён в
+		// ListCloseWindow (последнее окно). Microsoft явно запрещает GdiplusShutdown
+		// из DllMain (gdiplus.h doc): GdiPlus при shutdown ждёт завершения worker-threads,
+		// которые под loader lock завершиться не могут → cm_UnloadPlugins вешает Total Commander.
 		if(hook_keyb)
 			UnhookWindowsHookEx(hook_keyb);
+		if(hook_getmsg)
+			UnhookWindowsHookEx(hook_getmsg);
 		if(img_list)
 			ImageList_Destroy(img_list);
 		if (gTranslateIcon)
@@ -1704,11 +2156,6 @@ BOOL APIENTRY DllMain( HANDLE hModule, DWORD  reason_for_call, LPVOID lpReserved
 		{
 			DestroyIcon(gFastFontIcon);
 			gFastFontIcon = NULL;
-		}
-		if (gGdiPlusToken != 0)
-		{
-			Gdiplus::GdiplusShutdown(gGdiPlusToken);
-			gGdiPlusToken = 0;
 		}
 	}
 	return TRUE;

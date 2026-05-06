@@ -141,7 +141,7 @@ msbuild MarkdownView.sln /p:Configuration=Release /p:Platform=x64
 ## 🙏 Благодарности
 
 - **ezyuzin** за улучшенную версию [wlx-markdown-viewer](https://github.com/ezyuzin/wlx-markdown-viewer) с поддержкой Markdig
-- **rg-software** за оригинальный [wlx-markdown-viewer](https://github.com/rg-software/wlx-markdown-viewer) 
+- **rg-software** за оригинальный [wlx-markdown-viewer](https://github.com/rg-software/wlx-markdown-viewer)
 - **xoofx** за процессор [Markdig](https://github.com/xoofx/markdig)
 
 ## 📄 Лицензия

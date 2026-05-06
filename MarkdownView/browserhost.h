@@ -17,13 +17,13 @@ enum FocusCatchType {fctNoCatch, fctQuickView, fctLister};
 //								CBrowserHost						   //
 //=====================================================================//
 
-class CBrowserHost : 
+class CBrowserHost :
 	public IDispatch,
 	public IOleControlSite,
-	public IOleClientSite, 
+	public IOleClientSite,
 	public IOleInPlaceSite
 {
-public:	
+public:
 	//HWND mFocusWin;
 	FocusCatchType mFocusType;
 	HWND mParentWin;
@@ -39,6 +39,7 @@ public:
 	CComPtr<ICoreWebView2> mWebView;
 	CComPtr<ICoreWebView2Environment> mWebViewEnvironment;
 	bool mIsWebView2Initialized;
+	bool mIsWebView2DocumentReady;
 	bool mIsShuttingDown;
 	static CComPtr<ICoreWebView2Environment> sSharedEnvironment;
 	double mZoomFactor;
@@ -76,6 +77,7 @@ public:
 	void ZoomIn();
 	void ZoomOut();
 	void ZoomReset();
+	void ShowWebFind();
 	void Search(const wchar_t* text, bool forward, bool matchCase, bool wholeWord);
 	bool FindText(CComBSTR search, long search_flags, bool backward);
 	bool IsSearchHighlightEnabled();
@@ -89,52 +91,52 @@ public:
 	bool FormFocused();
 	void SetStatusText(const wchar_t* str, DWORD delay=0);
 	void ExecuteScript(const wchar_t* script);
-public:  
+public:
 	// IUnknown
 	STDMETHODIMP QueryInterface(REFIID iid, void ** ppvObject);
     ULONG STDMETHODCALLTYPE AddRef();
     ULONG STDMETHODCALLTYPE Release();
 
     // IOleClientSite
-    STDMETHODIMP GetContainer(LPOLECONTAINER FAR* ppContainer); 
-    STDMETHODIMP SaveObject(); 
-    STDMETHODIMP GetMoniker(DWORD dwAssign, DWORD dwWhichMoniker, IMoniker ** ppmk); 
-    STDMETHODIMP ShowObject(); 
-    STDMETHODIMP OnShowWindow(BOOL fShow); 
-    STDMETHODIMP RequestNewObjectLayout(); 
+    STDMETHODIMP GetContainer(LPOLECONTAINER FAR* ppContainer);
+    STDMETHODIMP SaveObject();
+    STDMETHODIMP GetMoniker(DWORD dwAssign, DWORD dwWhichMoniker, IMoniker ** ppmk);
+    STDMETHODIMP ShowObject();
+    STDMETHODIMP OnShowWindow(BOOL fShow);
+    STDMETHODIMP RequestNewObjectLayout();
     // IOleWindow
     HRESULT STDMETHODCALLTYPE GetWindow(HWND * phwnd);
-    HRESULT STDMETHODCALLTYPE ContextSensitiveHelp(BOOL fEnterMode); 
+    HRESULT STDMETHODCALLTYPE ContextSensitiveHelp(BOOL fEnterMode);
     // IOleInPlaceSite
-    HRESULT STDMETHODCALLTYPE CanInPlaceActivate(void); 
-    HRESULT STDMETHODCALLTYPE OnInPlaceActivate(void); 
-    HRESULT STDMETHODCALLTYPE OnUIActivate(void); 
+    HRESULT STDMETHODCALLTYPE CanInPlaceActivate(void);
+    HRESULT STDMETHODCALLTYPE OnInPlaceActivate(void);
+    HRESULT STDMETHODCALLTYPE OnUIActivate(void);
     HRESULT STDMETHODCALLTYPE GetWindowContext(IOleInPlaceFrame **ppFrame,
                                                IOleInPlaceUIWindow **ppDoc, LPRECT lprcPosRect,
                                                LPRECT lprcClipRect,
                                                LPOLEINPLACEFRAMEINFO lpFrameInfo);
-    HRESULT STDMETHODCALLTYPE Scroll(SIZE scrollExtant); 
-    HRESULT STDMETHODCALLTYPE OnUIDeactivate(BOOL fUndoable); 
-    HRESULT STDMETHODCALLTYPE OnInPlaceDeactivate(void); 
-    HRESULT STDMETHODCALLTYPE DiscardUndoState(void); 
-    HRESULT STDMETHODCALLTYPE DeactivateAndUndo(void); 
-    HRESULT STDMETHODCALLTYPE OnPosRectChange(LPCRECT lprcPosRect); 
+    HRESULT STDMETHODCALLTYPE Scroll(SIZE scrollExtant);
+    HRESULT STDMETHODCALLTYPE OnUIDeactivate(BOOL fUndoable);
+    HRESULT STDMETHODCALLTYPE OnInPlaceDeactivate(void);
+    HRESULT STDMETHODCALLTYPE DiscardUndoState(void);
+    HRESULT STDMETHODCALLTYPE DeactivateAndUndo(void);
+    HRESULT STDMETHODCALLTYPE OnPosRectChange(LPCRECT lprcPosRect);
 	// IOleControlSite
-    HRESULT STDMETHODCALLTYPE OnControlInfoChanged(void); 
-    HRESULT STDMETHODCALLTYPE LockInPlaceActive(BOOL fLock); 
-    HRESULT STDMETHODCALLTYPE GetExtendedControl(IDispatch **ppDisp); 
-    HRESULT STDMETHODCALLTYPE TransformCoords(POINTL *pPtlHimetric, POINTF *pPtfContainer, DWORD dwFlags); 
-    HRESULT STDMETHODCALLTYPE TranslateAccelerator(MSG *pMsg, DWORD grfModifiers); 
-    HRESULT STDMETHODCALLTYPE OnFocus(BOOL fGotFocus); 
-    HRESULT STDMETHODCALLTYPE ShowPropertyFrame(void); 
-	
-	
+    HRESULT STDMETHODCALLTYPE OnControlInfoChanged(void);
+    HRESULT STDMETHODCALLTYPE LockInPlaceActive(BOOL fLock);
+    HRESULT STDMETHODCALLTYPE GetExtendedControl(IDispatch **ppDisp);
+    HRESULT STDMETHODCALLTYPE TransformCoords(POINTL *pPtlHimetric, POINTF *pPtfContainer, DWORD dwFlags);
+    HRESULT STDMETHODCALLTYPE TranslateAccelerator(MSG *pMsg, DWORD grfModifiers);
+    HRESULT STDMETHODCALLTYPE OnFocus(BOOL fGotFocus);
+    HRESULT STDMETHODCALLTYPE ShowPropertyFrame(void);
+
+
     // IDispatch
-    HRESULT STDMETHODCALLTYPE GetTypeInfoCount(unsigned int FAR* pctinfo); 
+    HRESULT STDMETHODCALLTYPE GetTypeInfoCount(unsigned int FAR* pctinfo);
     HRESULT STDMETHODCALLTYPE GetTypeInfo(unsigned int iTInfo, LCID  lcid,
-                                          ITypeInfo FAR* FAR*  ppTInfo); 
+                                          ITypeInfo FAR* FAR*  ppTInfo);
     HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID riid, OLECHAR FAR* FAR* rgszNames,
-                                            unsigned int cNames, LCID lcid, DISPID FAR* rgDispId); 
+                                            unsigned int cNames, LCID lcid, DISPID FAR* rgDispId);
     HRESULT STDMETHODCALLTYPE Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD wFlags,
                                      DISPPARAMS FAR* pDispParams, VARIANT FAR* parResult,
                                      EXCEPINFO FAR* pExcepInfo, unsigned int FAR* puArgErr);
