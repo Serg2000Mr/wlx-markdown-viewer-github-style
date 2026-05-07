@@ -70,13 +70,13 @@ namespace {
 #ifndef _WIN64
 	using hostfxr_handle = void*;
 
-	using hostfxr_initialize_for_runtime_config_fn = int(__stdcall*)(const wchar_t*, const void*, hostfxr_handle*);
-	using hostfxr_get_runtime_delegate_fn = int(__stdcall*)(hostfxr_handle, int, void**);
-	using hostfxr_close_fn = int(__stdcall*)(hostfxr_handle);
+	using hostfxr_initialize_for_runtime_config_fn = int(__cdecl*)(const wchar_t*, const void*, hostfxr_handle*);
+	using hostfxr_get_runtime_delegate_fn = int(__cdecl*)(hostfxr_handle, int, void**);
+	using hostfxr_close_fn = int(__cdecl*)(hostfxr_handle);
 	using load_assembly_and_get_function_pointer_fn = int(__stdcall*)(const wchar_t*, const wchar_t*, const wchar_t*, const wchar_t*, void*, void**);
 
-	constexpr int hdt_load_assembly_and_get_function_pointer = 3;
-	const wchar_t* kUnmanagedCallersOnlyMethod = L"UNMANAGEDCALLERSONLY_METHOD";
+	constexpr int hdt_load_assembly_and_get_function_pointer = 5;
+	const wchar_t* kUnmanagedCallersOnlyMethod = reinterpret_cast<const wchar_t*>(-1);
 
 	bool FileExists(const std::wstring& path)
 	{
@@ -308,6 +308,7 @@ namespace {
 		const wchar_t* typeName = L"MarkdigNative.Lib, MarkdigNative-x86";
 
 		void* convertPtr = nullptr;
+		AppendRuntimeLogLine(L"x86 bind ConvertMarkdownToHtml begin");
 		rc = loadAssemblyAndGetFunctionPointer(
 			assemblyPath.c_str(),
 			typeName,
@@ -315,6 +316,7 @@ namespace {
 			kUnmanagedCallersOnlyMethod,
 			nullptr,
 			&convertPtr);
+		AppendRuntimeLogLine(L"x86 bind ConvertMarkdownToHtml rc=" + std::to_wstring(rc));
 		if (rc != 0 || !convertPtr)
 		{
 			gInitErrorHtml = "<html><body><h1>Error</h1><p>Failed to bind ConvertMarkdownToHtml.</p></body></html>";
@@ -322,6 +324,7 @@ namespace {
 		}
 
 		void* freePtr = nullptr;
+		AppendRuntimeLogLine(L"x86 bind FreeHtmlBuffer begin");
 		rc = loadAssemblyAndGetFunctionPointer(
 			assemblyPath.c_str(),
 			typeName,
@@ -329,6 +332,7 @@ namespace {
 			kUnmanagedCallersOnlyMethod,
 			nullptr,
 			&freePtr);
+		AppendRuntimeLogLine(L"x86 bind FreeHtmlBuffer rc=" + std::to_wstring(rc));
 		if (rc != 0 || !freePtr)
 		{
 			gInitErrorHtml = "<html><body><h1>Error</h1><p>Failed to bind FreeHtmlBuffer.</p></body></html>";
@@ -344,13 +348,13 @@ namespace {
 #ifdef _WIN64
 	using hostfxr_handle = void*;
 
-	using hostfxr_initialize_for_runtime_config_fn = int(__stdcall*)(const wchar_t*, const void*, hostfxr_handle*);
-	using hostfxr_get_runtime_delegate_fn = int(__stdcall*)(hostfxr_handle, int, void**);
-	using hostfxr_close_fn = int(__stdcall*)(hostfxr_handle);
+	using hostfxr_initialize_for_runtime_config_fn = int(__cdecl*)(const wchar_t*, const void*, hostfxr_handle*);
+	using hostfxr_get_runtime_delegate_fn = int(__cdecl*)(hostfxr_handle, int, void**);
+	using hostfxr_close_fn = int(__cdecl*)(hostfxr_handle);
 	using load_assembly_and_get_function_pointer_fn = int(__stdcall*)(const wchar_t*, const wchar_t*, const wchar_t*, const wchar_t*, void*, void**);
 
-	constexpr int hdt_load_assembly_and_get_function_pointer = 3;
-	const wchar_t* kUnmanagedCallersOnlyMethod = L"UNMANAGEDCALLERSONLY_METHOD";
+	constexpr int hdt_load_assembly_and_get_function_pointer = 5;
+	const wchar_t* kUnmanagedCallersOnlyMethod = reinterpret_cast<const wchar_t*>(-1);
 
 	bool FileExists(const std::wstring& path)
 	{
@@ -576,6 +580,7 @@ namespace {
 		const wchar_t* typeName = typeNameStr.c_str();
 
 		void* convertPtr = nullptr;
+		AppendRuntimeLogLine(L"x64 bind ConvertMarkdownToHtml begin");
 		rc = loadAssemblyAndGetFunctionPointer(
 			assemblyPath.c_str(),
 			typeName,
@@ -583,6 +588,7 @@ namespace {
 			kUnmanagedCallersOnlyMethod,
 			nullptr,
 			&convertPtr);
+		AppendRuntimeLogLine(L"x64 bind ConvertMarkdownToHtml rc=" + std::to_wstring(rc));
 		if (rc != 0 || !convertPtr)
 		{
 			gInitErrorHtml = "<html><body><h1>Error</h1><p>Failed to bind ConvertMarkdownToHtml.</p></body></html>";
@@ -590,6 +596,7 @@ namespace {
 		}
 
 		void* freePtr = nullptr;
+		AppendRuntimeLogLine(L"x64 bind FreeHtmlBuffer begin");
 		rc = loadAssemblyAndGetFunctionPointer(
 			assemblyPath.c_str(),
 			typeName,
@@ -597,6 +604,7 @@ namespace {
 			kUnmanagedCallersOnlyMethod,
 			nullptr,
 			&freePtr);
+		AppendRuntimeLogLine(L"x64 bind FreeHtmlBuffer rc=" + std::to_wstring(rc));
 		if (rc != 0 || !freePtr)
 		{
 			gInitErrorHtml = "<html><body><h1>Error</h1><p>Failed to bind FreeHtmlBuffer.</p></body></html>";
