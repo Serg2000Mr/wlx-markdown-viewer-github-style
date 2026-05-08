@@ -15,6 +15,7 @@ A plugin for viewing Markdown files in Total Commander with modern features and 
 - **Code highlighting** - Syntax highlighting for code blocks
 - **Math formulas** - LaTeX-style mathematical expressions
 - **Page translation** - Optional Google Translate-based translation
+- **Bionic-style reading font** - Toggle a FastFont mode that bolds fixation points at the start of words for easier long-form reading
 
 ## 🚀 Key Advantages
 
@@ -55,7 +56,16 @@ CustomCSSDark=css\github.dark.css
 Enabled=0
 Auto=0
 Target=auto
+
+[FastFont]
+Enabled=1
 ```
+
+## 🧠 Bionic-Style Reading
+
+The toolbar includes a **FastFont** button that switches the current document to bundled Bionic-style fonts. The mode uses local `Fast Sans` and `Fast Mono` fonts, so it does not need an internet connection and does not rewrite the Markdown text.
+
+The effect is designed for long documents: the first part of each word is visually emphasized to create fixation points for the eyes. For a short explanation of the idea, see this article: [how a bionic font can speed up reading](https://www.mentoday.ru/life/news/20-01-2025/sozdan-bionicheskii-shrift-uskoryayushchii-process-chteniya-kak-eto-rabotaet/).
 
 ## 🔍 Zoom Control
 
