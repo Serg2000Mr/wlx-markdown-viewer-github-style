@@ -1,5 +1,5 @@
 [plugininstall]
 description=Markdown Viewer with GitHub-style rendering and Mermaid.js support
 type=wlx
-file=MarkdownView.wlx64
-defaultdir=MarkdownViewGitHubStyle
+file=MarkdownView.wlx
+defaultdir=MarkdownViewGitHubStyle-x86
