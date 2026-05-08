@@ -45,6 +45,53 @@ static bool IsInternalUri(const std::wstring& uri)
 	return false;
 }
 
+static std::wstring ExtractJsonStringField(const wchar_t* json, const wchar_t* fieldName)
+{
+	if (!json || !fieldName || !fieldName[0])
+		return L"";
+
+	std::wstring key = L"\"";
+	key += fieldName;
+	key += L"\":\"";
+
+	const wchar_t* pos = wcsstr(json, key.c_str());
+	if (!pos)
+		return L"";
+
+	pos += key.length();
+	std::wstring value;
+	while (*pos)
+	{
+		if (*pos == L'\"')
+			break;
+
+		if (*pos == L'\\' && pos[1])
+		{
+			++pos;
+			switch (*pos)
+			{
+			case L'\"': value += L'\"'; break;
+			case L'\\': value += L'\\'; break;
+			case L'/': value += L'/'; break;
+			case L'b': value += L'\b'; break;
+			case L'f': value += L'\f'; break;
+			case L'n': value += L'\n'; break;
+			case L'r': value += L'\r'; break;
+			case L't': value += L'\t'; break;
+			default: value += *pos; break;
+			}
+		}
+		else
+		{
+			value += *pos;
+		}
+
+		++pos;
+	}
+
+	return value;
+}
+
 CBrowserHost::CBrowserHost() :
 	mImagesHidden(false),
 	mEventsCookie(0),
@@ -159,7 +206,18 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 			nullptr);
 
 		mWebView->AddScriptToExecuteOnDocumentCreated(
-			L"window.addEventListener('scroll', () => { window.chrome.webview.postMessage({type: 'scroll', top: window.pageYOffset}); });",
+			L"window.addEventListener('scroll', () => { window.chrome.webview.postMessage({type: 'scroll', top: window.pageYOffset}); });"
+			L"document.addEventListener('mouseover', function(e) {"
+			L" var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;"
+			L" if(a) window.chrome.webview.postMessage({type:'linkhover',href:a.getAttribute('href')||''});"
+			L"}, true);"
+			L"document.addEventListener('mouseout', function(e) {"
+			L" var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;"
+			L" if(!a) return;"
+			L" var to=e.relatedTarget;"
+			L" if(to&&a.contains(to)) return;"
+			L" window.chrome.webview.postMessage({type:'linkout'});"
+			L"}, true);",
 			nullptr);
 
 		mWebView->add_WebMessageReceived(
@@ -219,6 +277,13 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 							}
 							UpdateToolbarButtonText(TBB_TRANSLATE, text);
 						}
+					}
+					else if (message && wcsstr(message, L"\"type\":\"linkhover\"")) {
+						std::wstring href = ExtractJsonStringField(message, L"href");
+						SetStatusText(href.c_str(), 0);
+					}
+					else if (message && wcsstr(message, L"\"type\":\"linkout\"")) {
+						SetStatusText(L"", 0);
 					}
 					CoTaskMemFree(message);
 					return S_OK;
