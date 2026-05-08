@@ -13,6 +13,7 @@ A plugin for viewing Markdown files in Total Commander with modern features and 
 - **Emoji** - GitHub-style emoji via shortcodes (`:emoji_name:`)
 - **Task lists** - Interactive checkboxes for task tracking
 - **Code highlighting** - Syntax highlighting for code blocks
+- **Code copy button** - One-click copying for regular fenced code blocks
 - **Math formulas** - LaTeX-style mathematical expressions
 - **Page translation** - Optional Google Translate-based translation
 - **Bionic-style reading font** - Toggle a FastFont mode that bolds fixation points at the start of words for easier long-form reading

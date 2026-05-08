@@ -86,6 +86,160 @@ public static class Lib
     private static readonly Encoding Utf8Strict = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly Encoding SystemAnsi = GetSystemAnsiEncoding();
 
+    private const string CodeCopyButtonStyles = """
+<style>
+.mdv-code-block {
+  position: relative;
+}
+.mdv-code-block > pre {
+  padding-right: 3.75rem;
+}
+.mdv-code-copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  color: #57606a;
+  background: rgba(246, 248, 250, 0.94);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s ease, border-color .12s ease, color .12s ease, background-color .12s ease;
+}
+.mdv-code-block:hover .mdv-code-copy-button,
+.mdv-code-copy-button:focus {
+  opacity: 1;
+}
+.mdv-code-copy-button:hover {
+  color: #24292f;
+  border-color: #8c959f;
+  background: #f3f4f6;
+}
+.mdv-code-copy-button .octicon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.mdv-code-copy-button .mdv-copy-check {
+  display: none;
+}
+.mdv-code-copy-button.mdv-copied .mdv-copy-icon {
+  display: none;
+}
+.mdv-code-copy-button.mdv-copied .mdv-copy-check {
+  display: block;
+}
+.mdv-code-copy-button.mdv-copied,
+.mdv-code-copy-button.mdv-copied:hover {
+  color: #1a7f37;
+  border-color: #1a7f37;
+  background: #f6f8fa;
+}
+@media (prefers-color-scheme: dark) {
+  .mdv-code-copy-button {
+    color: #8b949e;
+    background: rgba(22, 27, 34, 0.94);
+    border-color: #30363d;
+  }
+  .mdv-code-copy-button:hover {
+    color: #e6edf3;
+    border-color: #8b949e;
+    background: #30363d;
+  }
+  .mdv-code-copy-button.mdv-copied,
+  .mdv-code-copy-button.mdv-copied:hover {
+    color: #3fb950;
+    border-color: #3fb950;
+    background: #161b22;
+  }
+}
+</style>
+""";
+
+    private const string CodeCopyButtonScript = """
+<script>
+(function(){
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function(resolve, reject) {
+      var textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-1000px';
+      textarea.style.top = '-1000px';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        if (document.execCommand('copy')) resolve();
+        else reject(new Error('copy command failed'));
+      } catch (err) {
+        reject(err);
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    });
+  }
+
+  function setButtonState(button, copied) {
+    var original = button.getAttribute('data-mdv-label') || 'Copy';
+    var copiedText = button.getAttribute('data-copy-feedback') || 'Copied!';
+    button.classList.toggle('mdv-copied', copied);
+    button.setAttribute('aria-label', copied ? copiedText : original);
+    button.setAttribute('title', copied ? copiedText : original);
+    clearTimeout(button._mdvCopyTimer);
+    button._mdvCopyTimer = setTimeout(function() {
+      button.classList.remove('mdv-copied');
+      button.setAttribute('aria-label', original);
+      button.setAttribute('title', original);
+    }, 1200);
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('pre > code:not(.language-mermaid)').forEach(function(code) {
+      var pre = code.parentElement;
+      if (!pre || pre.getAttribute('data-mdv-copy-ready') === '1') return;
+      pre.setAttribute('data-mdv-copy-ready', '1');
+
+      var wrapper = document.createElement('div');
+      wrapper.className = 'mdv-code-block';
+      pre.parentNode.insertBefore(wrapper, pre);
+      wrapper.appendChild(pre);
+
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'mdv-code-copy-button';
+      button.setAttribute('data-mdv-label', 'Copy');
+      button.setAttribute('data-copy-feedback', 'Copied!');
+      button.setAttribute('title', 'Copy');
+      button.setAttribute('aria-label', 'Copy');
+      button.innerHTML = '<svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" class="octicon octicon-copy mdv-copy-icon"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg><svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" class="octicon octicon-check mdv-copy-check"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"></path></svg>';
+      button.addEventListener('click', function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        copyText(code.textContent || '').then(function() {
+          setButtonState(button, true);
+        }, function() {
+          setButtonState(button, false);
+        });
+      });
+      wrapper.appendChild(button);
+    });
+  });
+})();
+</script>
+""";
+
     private readonly record struct HtmlCacheKey(
         string FilenameKey,
         long MdLastWriteTicksUtc,
@@ -426,6 +580,7 @@ public static class Lib
             sb.Append("<style>");
             sb.Append(cssContent);
             sb.Append("</style>");
+            sb.AppendLine(CodeCopyButtonStyles);
             if (diagramsEnabled)
             {
                 sb.AppendLine("<script src='https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' defer></script>");
@@ -446,6 +601,7 @@ public static class Lib
             string renderedHtml = Markdown.ToHtml(source, pipeline);
             renderedHtml = StandaloneAnchorParagraphPattern.Replace(renderedHtml, "$1");
             sb.AppendLine(renderedHtml);
+            sb.AppendLine(CodeCopyButtonScript);
             sb.AppendLine("<script>(function(){var n=function(s){return (s||'').replace(/-/g,' ').trim().toLowerCase();};var hs=Array.prototype.slice.call(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));document.querySelectorAll('a[href^=\"#\"]').forEach(function(a){a.removeAttribute('title');var href=a.getAttribute('href');if(!href||href.length<2)return;var frag=href.slice(1);var decoded;try{decoded=decodeURIComponent(frag);}catch(e){decoded=frag;}if(document.getElementById(decoded)||document.getElementById(frag))return;var norm=n(decoded);if(!norm)return;for(var i=0;i<hs.length;i++){var h=hs[i];if(n(h.textContent)===norm){if(h.id){var span=document.createElement('span');span.id=decoded;h.parentNode.insertBefore(span,h);}else{h.id=decoded;}break;}}});})();</script>");
             sb.AppendLine("<script>document.addEventListener('click',function(e){var a=e.target;while(a&&a.tagName!=='A'){a=a.parentElement;}if(!a)return;var href=a.getAttribute('href');if(!href||href.length<2||href[0]!=='#')return;e.preventDefault();},true);</script>");
             sb.AppendLine("</body>");
