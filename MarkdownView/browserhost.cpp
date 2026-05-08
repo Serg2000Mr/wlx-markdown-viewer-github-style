@@ -52,13 +52,24 @@ static std::wstring ExtractJsonStringField(const wchar_t* json, const wchar_t* f
 
 	std::wstring key = L"\"";
 	key += fieldName;
-	key += L"\":\"";
+	key += L"\"";
 
 	const wchar_t* pos = wcsstr(json, key.c_str());
 	if (!pos)
 		return L"";
 
 	pos += key.length();
+	while (*pos == L' ' || *pos == L'\t' || *pos == L'\r' || *pos == L'\n')
+		++pos;
+	if (*pos != L':')
+		return L"";
+	++pos;
+	while (*pos == L' ' || *pos == L'\t' || *pos == L'\r' || *pos == L'\n')
+		++pos;
+	if (*pos != L'\"')
+		return L"";
+	++pos;
+
 	std::wstring value;
 	while (*pos)
 	{
@@ -267,23 +278,19 @@ bool CBrowserHost::CreateBrowser(HWND hParent)
 							mScrollTop = newScroll;
 						}
 					}
-					else if (message && wcsstr(message, L"\"type\":\"gt_state\"")) {
-						wchar_t* textPos = wcsstr(message, L"\"text\":\"");
-						if (textPos) {
-							std::wstring text;
-							textPos += 8;
-							while (*textPos && *textPos != L'\"') {
-								text += *textPos++;
-							}
+					else if (message) {
+						std::wstring type = ExtractJsonStringField(message, L"type");
+						if (type == L"gt_state") {
+							std::wstring text = ExtractJsonStringField(message, L"text");
 							UpdateToolbarButtonText(TBB_TRANSLATE, text);
 						}
-					}
-					else if (message && wcsstr(message, L"\"type\":\"linkhover\"")) {
-						std::wstring href = ExtractJsonStringField(message, L"href");
-						SetStatusText(href.c_str(), 0);
-					}
-					else if (message && wcsstr(message, L"\"type\":\"linkout\"")) {
-						SetStatusText(L"", 0);
+						else if (type == L"linkhover") {
+							std::wstring href = ExtractJsonStringField(message, L"href");
+							SetStatusText(href.c_str(), 0);
+						}
+						else if (type == L"linkout") {
+							SetStatusText(L"", 0);
+						}
 					}
 					CoTaskMemFree(message);
 					return S_OK;
