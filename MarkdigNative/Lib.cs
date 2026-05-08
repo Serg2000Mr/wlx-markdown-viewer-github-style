@@ -110,6 +110,7 @@ public static class Lib
   color: #57606a;
   background: rgba(246, 248, 250, 0.94);
   cursor: pointer;
+  overflow: visible;
   opacity: 0;
   transition: opacity .12s ease, border-color .12s ease, color .12s ease, background-color .12s ease;
 }
@@ -121,6 +122,42 @@ public static class Lib
   color: #24292f;
   border-color: #8c959f;
   background: #f3f4f6;
+}
+.mdv-code-copy-button::before {
+  content: attr(data-mdv-tooltip);
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: #f6f8fa;
+  background: #24292f;
+  font: 12px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.mdv-code-copy-button::after {
+  content: "";
+  position: absolute;
+  right: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent;
+  border-left-color: #24292f;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.mdv-code-copy-button:hover::before,
+.mdv-code-copy-button:hover::after,
+.mdv-code-copy-button:focus::before,
+.mdv-code-copy-button:focus::after,
+.mdv-code-copy-button.mdv-copied::before,
+.mdv-code-copy-button.mdv-copied::after {
+  opacity: 1;
 }
 .mdv-code-copy-button .octicon {
   width: 16px;
@@ -139,8 +176,8 @@ public static class Lib
 .mdv-code-copy-button.mdv-copied,
 .mdv-code-copy-button.mdv-copied:hover {
   color: #1a7f37;
-  border-color: #1a7f37;
-  background: #f6f8fa;
+  border-color: transparent;
+  background: transparent;
 }
 @media (prefers-color-scheme: dark) {
   .mdv-code-copy-button {
@@ -156,8 +193,8 @@ public static class Lib
   .mdv-code-copy-button.mdv-copied,
   .mdv-code-copy-button.mdv-copied:hover {
     color: #3fb950;
-    border-color: #3fb950;
-    background: #161b22;
+    border-color: transparent;
+    background: transparent;
   }
 }
 </style>
@@ -196,12 +233,12 @@ public static class Lib
     var copiedText = button.getAttribute('data-copy-feedback') || 'Copied!';
     button.classList.toggle('mdv-copied', copied);
     button.setAttribute('aria-label', copied ? copiedText : original);
-    button.setAttribute('title', copied ? copiedText : original);
+    button.setAttribute('data-mdv-tooltip', copied ? copiedText : original);
     clearTimeout(button._mdvCopyTimer);
     button._mdvCopyTimer = setTimeout(function() {
       button.classList.remove('mdv-copied');
       button.setAttribute('aria-label', original);
-      button.setAttribute('title', original);
+      button.setAttribute('data-mdv-tooltip', original);
     }, 1200);
   }
 
@@ -221,7 +258,7 @@ public static class Lib
       button.className = 'mdv-code-copy-button';
       button.setAttribute('data-mdv-label', 'Copy');
       button.setAttribute('data-copy-feedback', 'Copied!');
-      button.setAttribute('title', 'Copy');
+      button.setAttribute('data-mdv-tooltip', 'Copy');
       button.setAttribute('aria-label', 'Copy');
       button.innerHTML = '<svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" class="octicon octicon-copy mdv-copy-icon"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg><svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" class="octicon octicon-check mdv-copy-check"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"></path></svg>';
       button.addEventListener('click', function(event) {
