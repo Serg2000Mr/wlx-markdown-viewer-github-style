@@ -126,6 +126,7 @@ public static class Lib
 .mdv-code-copy-button::before {
   content: attr(data-mdv-tooltip);
   position: absolute;
+  display: none;
   right: calc(100% + 10px);
   top: 50%;
   transform: translateY(-50%);
@@ -136,24 +137,9 @@ public static class Lib
   font: 12px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   white-space: nowrap;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity .12s ease;
 }
-.mdv-code-copy-button::after {
-  content: "";
-  position: absolute;
-  right: calc(100% + 4px);
-  top: 50%;
-  transform: translateY(-50%);
-  border: 6px solid transparent;
-  border-left-color: #24292f;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity .12s ease;
-}
-.mdv-code-copy-button.mdv-copied::before,
-.mdv-code-copy-button.mdv-copied::after {
-  opacity: 1;
+.mdv-code-copy-button.mdv-copied::before {
+  display: block;
 }
 .mdv-code-copy-button .octicon {
   width: 16px;
