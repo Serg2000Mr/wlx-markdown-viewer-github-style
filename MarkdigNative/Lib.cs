@@ -102,8 +102,8 @@ public static class Lib
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 28px;
+  width: 24px;
+  height: 22px;
   padding: 0;
   border: 1px solid #d0d7de;
   border-radius: 6px;
